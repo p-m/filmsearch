@@ -1,10 +1,10 @@
 # filmsearch
 Search films in TV-channels
 
-done-marker: ==============================================================
+done-marker: +++++++++++++++++++++++++++++++++++++++++++++++++
 
 - manually:      select imdb-id
-==============================================================
++++++++++++++++++++++++++++++++++++++++++++++++++
 - automatically: fill structure with data of imdb-id and level-change-date
 - manually:      adjust the content of the structure and add it to db
 
