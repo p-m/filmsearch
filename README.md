@@ -1,10 +1,7 @@
 # filmsearch
 Search films in TV-channels
 
-done-marker: +++++++++++++++++++++++++++++++++++++++++++++++++
-
 - manually:      select imdb-id
-+++++++++++++++++++++++++++++++++++++++++++++++++
 - automatically: fill structure with data of imdb-id and level-change-date
 - manually:      adjust the content of the structure and add it to db
 
@@ -25,7 +22,6 @@ cronjob (or at every start of vdr):
       - all db-data
       - link to vdr-admin for creating timer
       - link to imdb
-      - line in db (for telling emacs to jump to db-file at this line)
     - increment match-counter of db-entry
     - set "already-searched = 1"
 - autoadapt search levels:
