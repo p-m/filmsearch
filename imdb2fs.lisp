@@ -1,22 +1,26 @@
 ":"; C="exec sbcl --noinform --end-runtime-options --disable-debugger"
 ":"; $C --load "$0" --eval '(main)' --quit --end-toplevel-options "$@"
 
-;; example usage: "imdb2fs.lisp input-file output-file tmdb-key-file"
+;; example usage:
+;; - put your IMDB-IDs in /tmp/imdb-ids
+;; - call "imdb2fs.lisp"
+;; - get your filmsearch-entries from /tmp/fs-entries
 
 (dolist (package '(:drakma :cl-json :plump-dom :plump-sexp))
   (require package))
 (unless (constantp '+input+)
   (defconstant +input+ (or (second sb-ext:*posix-argv*) "/tmp/imdb-ids")
-    "File with IMDB IDs.")
+    "File with IMDB-IDs.")
   (defconstant +output+ (or (third sb-ext:*posix-argv*) "/tmp/fs-entries")
     "File with resulting fs-entries.")
   (defconstant +imdb-pre+ "http://akas.imdb.com/title/tt" "IMDB prefix.")
   (defconstant +tmdb-pre+ "https://api.themoviedb.org/3/" "TMDB prefix.")
   (defconstant +tmdb-keyfile+ (or (fourth sb-ext:*posix-argv*) "/tmp/tmdb-key")
     "File with TMDB key.")
-  (defconstant +tmdb-key+
-    (format nil "?api_key=~a" (with-open-file (in +tmdb-keyfile+)
-                                (read-line in)))
+  (defconstant +tmdb-key+ (when (probe-file +tmdb-keyfile+)
+                            (format nil "?api_key=~a"
+                                    (with-open-file (in +tmdb-keyfile+)
+                                      (read-line in))))
     "API key for TMDB."))
 
 (defun get-match (reg text)
@@ -44,9 +48,10 @@
 
 (defun get-json (url)
   "Get list from json url."
-  (let ((stream (drakma:http-request url :want-stream t)))
-    (setf (flexi-streams:flexi-stream-external-format stream) :utf-8)
-    (cl-json:decode-json stream)))
+  (when +tmdb-key+
+    (let ((stream (drakma:http-request url :want-stream t)))
+      (setf (flexi-streams:flexi-stream-external-format stream) :utf-8)
+      (cl-json:decode-json stream))))
 
 (defmacro alist-add (key value)
   "Add key-value pair to alist."
@@ -107,7 +112,7 @@ attribute."
 (defun get-akas (tmdb imdb)
   "Get all the alternative titles."
   (let (res (regs '((de tmdb "at|de" imdb "german|austria")
-                    (en tmdb "gb|us" imdb "english")
+                    (en tmdb "gb|us" imdb "english|usa")
                     (fr tmdb "fr"    imdb "france|french"))))
     (dolist (e regs res)
       (let* ((key (car e)) (plist (cdr e))
@@ -126,6 +131,12 @@ attribute."
   (let* ((imdb-id (caddr (assoc 'ids e)))
          (url1 (format nil "~a~a/" +imdb-pre+ imdb-id))
          (url2 (format nil "~areleaseinfo#akas" url1))
+         (firefox (list "-new-tab" url1 "-new-tab" url2))
+         (imdb-title (cdr (assoc 'imdb-title e)))
+         (wiki-temp "https://~a.wikipedia.org/wiki/Spezial:~a?search=~a")
+         (wikis
+          (list "-new-tab" (format nil wiki-temp "de" "Suche" imdb-title)
+                "-new-tab" (format nil wiki-temp "en" "Search" imdb-title)))
          (o-lang (cdr (assoc 'original-langs e)))
          (akas (cdr (assoc 'alternative-titles e)))
          (runtimes (cdr (assoc 'runtimes e)))
@@ -140,15 +151,16 @@ attribute."
       (when (listp (cdr (assoc 'original-titles e)))
         (problem "check original title"))
       (if (stringp o-lang)
-          (if (and (string/= o-lang "de") (null (cdr (assoc 'de akas))))
-              (problem "no german title"))
+          (when (and (string/= o-lang "de") (null (cdr (assoc 'de akas))))
+            (problem "no german title")
+            (nconc firefox wikis))
           (problem "check original languages"))
-      (when (check-numbers runtimes 5)
+      (when (check-numbers runtimes 15)
         (problem "check runtime"))
       (when (check-numbers years 1)
         (problem "check release-years")))
     (when flag
-      (run-program "firefox" (list "-new-tab" url1 url2) :search t))))
+      (run-program "firefox" firefox :search t))))
 
 (defun imdb-id->entry (imdb-id)
   "Create new fs-entry from imdb-id."
@@ -183,8 +195,8 @@ attribute."
     (alist-add 'alternative-titles (get-akas tmdb-akas imdb-akas))
     (alist-add 'ids (list id imdb-id))
     (alist-add 'original-langs
-               (unique (cdr (assoc :original--language movie-results))
-                       (get-lang imdb)))
+               (or (get-lang imdb)
+                   (cdr (assoc :original--language movie-results))))
     (alist-add 'original-titles
                (unique (cdr (assoc :original--title movie-results))
                        (get-orig-title imdb-akas)))
