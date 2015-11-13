@@ -101,13 +101,10 @@ attribute."
      collect (cdadr e)))
 
 (defun unique (&rest args)
-  "Remove duplicates and NILs. If only one element, return without list."
-  (let* ((res1 (delete-if 'null args))
-         (res2 (delete-duplicates res1 :test (if (numberp (car res1))
-                                                 '= 'string-equal))))
-    (if (= (length res2) 1)
-        (car res2)
-        res2)))
+  "Remove duplicates and NILs."
+  (let* ((res (delete-if 'null args)))
+    (delete-duplicates res :test (if (numberp (car res))
+                                      '= 'string-equal))))
 
 (defun get-akas (tmdb imdb)
   "Get all the alternative titles."
@@ -137,7 +134,7 @@ attribute."
          (wikis
           (list "-new-tab" (format nil wiki-temp "de" "Suche" imdb-title)
                 "-new-tab" (format nil wiki-temp "en" "Search" imdb-title)))
-         (o-lang (cdr (assoc 'original-langs e)))
+         (o-lang (cdr (assoc 'original-lang e)))
          (akas (cdr (assoc 'alternative-titles e)))
          (runtimes (cdr (assoc 'runtimes e)))
          (years (cdr (assoc 'release-years e)))
@@ -146,9 +143,9 @@ attribute."
              (setf flag t) (format t "~a: ~a~%" imdb-id text))
            (check-numbers (nums max-diff)
              (or (null nums)
-                 (and (listp nums)
+                 (and (= (length nums) 2)
                       (> (abs (- (car nums) (cadr nums))) max-diff)))))
-      (when (listp (cdr (assoc 'original-titles e)))
+      (when (/= (length (cdr (assoc 'original-titles e))) 1)
         (problem "check original title"))
       (if (stringp o-lang)
           (when (and (string/= o-lang "de") (null (cdr (assoc 'de akas))))
@@ -194,7 +191,7 @@ attribute."
                                  (get-runtime imdb)))
     (alist-add 'alternative-titles (get-akas tmdb-akas imdb-akas))
     (alist-add 'ids (list id imdb-id))
-    (alist-add 'original-langs
+    (alist-add 'original-lang
                (or (get-lang imdb)
                    (cdr (assoc :original--language movie-results))))
     (alist-add 'original-titles
