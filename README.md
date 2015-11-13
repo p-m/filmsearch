@@ -1,5 +1,7 @@
 # filmsearch
-Search films in TV-channels
+Search EPG for films or other programs.
+
+Example usage:
 
 - write some IMDB-IDs to /tmp/imdb-ids
 - call imdb2fs.lisp
@@ -7,9 +9,15 @@ Search films in TV-channels
   list in /home/user/fs-entries
 - write your configuration to /home/user/.filmsearch
 
-cronjob (or at every start of vdr):
-"filmsearch.lisp /home/user/.filmsearch"
+cronjob (or at every start of vdr): "filmsearch.lisp /home/user/.filmsearch"
+
+For example, I have these lines in my run-vdr-script, just before calling VDR:
+
+    pidof sbcl >/dev/null || nice sudo -upeter ~peter/filmsearch.lisp \
+          ~peter/fs-config &>>/dev/shm/fs.log &
 
 ToDo:
+
 - filmsearch.lisp (check-title): optimize (pre-compiled regular expressions)
 - imdb2fs.lisp: add support for TV Series
+- support for: "imdb-title (TV Movie XXXX)"

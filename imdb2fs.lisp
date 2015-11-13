@@ -6,7 +6,7 @@
 ;; - call "imdb2fs.lisp"
 ;; - get your filmsearch-entries from /tmp/fs-entries
 
-(dolist (package '(:drakma :cl-json :plump-dom :plump-sexp))
+(dolist (package '(:cl-ppcre :drakma :cl-json :plump-dom :plump-sexp))
   (require package))
 (unless (constantp '+input+)
   (defconstant +input+ (or (second sb-ext:*posix-argv*) "/tmp/imdb-ids")

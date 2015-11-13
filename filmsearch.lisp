@@ -5,7 +5,7 @@
 
 (with-open-file (*standard-output*
                  "/dev/null" :direction :output :if-exists :append)
-  (dolist (package '(:cl-csv :cl-sendmail))
+  (dolist (package '(:cl-ppcre :cl-csv :cl-sendmail))
     (require package)))
 (unless (constantp '+config-file+)
   (defconstant +config-file+ (second sb-ext:*posix-argv*)
@@ -154,7 +154,7 @@
 (defun string->reg (s)
   "Convert string to regular expression."
   (let ((map '(("([:.!,?])"  . "[\\1]?")
-               ("[']"        . ".")
+               ("['–]"       . ".")
                ("([+|])"     . "[\\1]")
                ("( [*-/] )"  . "(\\1| )")
                ("([*])"      . "[\\1]")
@@ -207,6 +207,7 @@
            (imdb-title (cdr (assoc 'imdb-title fs)))
            (epg-id (getf epg :id))
            (to (cv :email-to)) (from (cv :email-from))
+           (rcpts (append (and to (list to)) (cdr (assoc 'emails fs))))
            (channel-number (getf epg :channel-number))
            (channel-name (getf epg :channel))
            (date (format nil "~2,'0d-~2,'0d-~4,'0d" d mm y))
@@ -222,8 +223,8 @@
              (cdr (assoc 'comment fs)) "Title" title "Channel" channel-name
              "Date" date "Time" time "IMDB" imdb "Timer" vdradmin
              (cl-ppcre:regex-replace-all "\\|" desc (string #\Newline)))))
-      (if to
-          (cl-sendmail:with-email (stream to :from from :subject subject)
+      (if rcpts
+          (cl-sendmail:with-email (stream rcpts :from from :subject subject)
             (setf (cl-sendmail::content stream) content))
           (format t "~a~%" subject)))))
 
