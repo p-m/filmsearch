@@ -20,4 +20,3 @@ ToDo:
 
 - filmsearch.lisp (check-title): optimize (pre-compiled regular expressions)
 - imdb2fs.lisp: add support for TV Series
-- support for: "imdb-title (TV Movie XXXX)"

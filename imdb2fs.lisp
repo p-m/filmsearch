@@ -183,9 +183,10 @@ attribute."
                                         imdb-id))) "akas")))
             (when akas (plump-sexp:serialize akas)))))
     (multiple-value-bind (dummy v) (cl-ppcre:scan-to-strings
-                                    "^(.*) \\(([0-9]*)\\)$" imdb-title-year)
+                                    "^(.*) \\((TV Movie )?([0-9]*)\\)$"
+                                    imdb-title-year)
       (declare (ignore dummy))
-      (when v (setf imdb-title (elt v 0) imdb-year (check-year (elt v 1)))))
+      (when v (setf imdb-title (elt v 0) imdb-year (check-year (elt v 2)))))
     (alist-add 'release-years (unique (check-year release-date) imdb-year))
     (alist-add 'runtimes (unique (cdr (assoc :runtime movie-results2))
                                  (get-runtime imdb)))
