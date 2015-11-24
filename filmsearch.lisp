@@ -15,8 +15,8 @@
       :epg-data-file    "/var/cache/vdr/epg.data"
       :epg-lisp-file    "/dev/shm/filmsearch/epg"
       :fs-entries       "/dev/shm/filmsearch/entries"
-      :max-days         3
-      :max-matches      3) "default values")
+      :max-days         4
+      :max-matches      4) "default values")
   (defconstant +imdb-pre+ "http://akas.imdb.com/title/tt" "IMDB prefix.")
   (defconstant +vdr-admin-page+
     "http://~a/vdradmin.pl?aktion=timer_new_form&epg_id=~a&vdr_id=~a"
@@ -161,7 +161,7 @@
                ("([áàâ])"    . "[a\\1]")
                ("([éèêë])"   . "[e\\1]")
                ("([îï])"     . "[i\\1]")
-               ("(ô)"        . "[o\\1]")
+               ("(ôóò)"      . "[o\\1]")
                ("([ûúù])"    . "[u\\1]"))))
     (dolist (m map)
       (setf s (cl-ppcre:regex-replace-all (format nil "(?i)~a" (car m))
@@ -179,22 +179,50 @@
                       (mapcar 'string->reg list) exactly))
     (cl-ppcre:scan reg epg-title)))
 
+(defun orig-in-description ()
+  "Check if original titles are in description."
+  )
+
+(defun check-all-keywords ()
+  "Check if all keywords are in description."
+  )
+
+(defun check-one-keyword ()
+  "Check if at least one keyword is in description."
+  )
+
 (defun find-match (fs epg)
-  "Try to find a match.
-   - level = 0: fs-title must be in epg-title (orig or same lang)
-   - level = 1: fs-title must match epg-title exactly (orig or same lang)
-   - level = 2: level 1 + epg-duration > 80% * fs-duration
-   - level = 3: level 2 + fs-year - 1 <= epg-year <= fs-year + 1"
-  (macrolet ((fs-field (x) `(cdr (assoc ,x fs))))
-    (let* ((level (or (fs-field 'level) 0)))
-      (and
-       (or (< level 3) (check-year (getf epg :description)
-                                   (fs-field 'release-years)))
-       (or (< level 2) (check-duration (getf epg :duration)
-                                       (fs-field 'runtimes)))
-       (check-title (getf epg :title) (getf epg :lang)
-                    (fs-field 'original-titles)
-                    (fs-field 'alternative-titles) (> level 0))))))
+  "Try to find a match."
+  (macrolet ((fs-field (x) `(cdr (assoc ,x fs)))
+             (checks () '(fs-field 'checks)))
+    (unless (checks)
+      (rplacd (last fs) (list (list 'checks 'title))))
+    (dolist (c '(all-keywords one-keyword))
+      (if (fs-field c) (pushnew c (checks))))
+    (dolist (c (checks) t)
+      (unless
+          (case c
+            (title
+             (check-title (getf epg :title) (getf epg :lang)
+                          (fs-field 'original-titles)
+                          (fs-field 'alternative-titles) nil))
+            (exact-title
+             (check-title (getf epg :title) (getf epg :lang)
+                          (fs-field 'original-titles)
+                          (fs-field 'alternative-titles) t))
+            (runtime
+             (check-duration (getf epg :duration)
+                             (fs-field 'runtimes)))
+            (year
+             (check-year (getf epg :description)
+                         (fs-field 'release-years)))
+            (orig-desc
+             (orig-in-description))
+            (all-keywords
+             (check-all-keywords))
+            (one-keyword
+             (check-one-keyword)))
+        (return)))))
 
 (defun send-email (fs epg)
   "Send email about a match."
@@ -205,6 +233,7 @@
     (let* ((title (getf epg :title))
            (imdb-id (caddr (assoc 'ids fs)))
            (imdb-title (cdr (assoc 'imdb-title fs)))
+           (years (cdr (assoc 'release-years fs)))
            (epg-id (getf epg :id))
            (to (cv :email-to)) (from (cv :email-from))
            (rcpts (append (and to (list to)) (cdr (assoc 'emails fs))))
@@ -214,7 +243,8 @@
            (time (format nil "~2,'0d:~2,'0d" h m))
            (vdradmin (format nil +vdr-admin-page+ (cv :vdradmin-host)
                              epg-id channel-number))
-           (imdb (format nil "~a~a/~@[  (~a)~]" +imdb-pre+ imdb-id imdb-title))
+           (imdb (format nil "~a~a/~@[  (~a)~]~@[ ~a~]" +imdb-pre+ imdb-id
+                         imdb-title years))
            (desc (getf epg :description))
            (subject (format nil "[FS] ~a: ~a" date title))
            (content
