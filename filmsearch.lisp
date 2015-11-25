@@ -168,16 +168,28 @@
                                           s (cdr m)))))
   s)
 
-(defun check-title (epg-title epg-lang list a-titles exactly)
+(defun check-title (epg-title epg-lang fs exactly)
   "Check title for a match."
-  (let ((lang (when epg-lang (intern (string-upcase epg-lang)))) reg)
-    (dolist (l a-titles)
-      (when (or (null lang) (eq lang (car l)))
-        (setf list (append list (cdr l)))))
-    (setf list (delete-duplicates list :test 'string-equal))
-    (setf reg (format nil "(?i)~:[~;^(~]~{~a~^|~}~:[~;)$~]" exactly
-                      (mapcar 'string->reg list) exactly))
-    (cl-ppcre:scan reg epg-title)))
+  (let ((lang (if epg-lang (intern (string-upcase epg-lang)) 'all)))
+    (macrolet ((fs-field (x) `(cdr (assoc ,x fs)))
+               (scanners () '(fs-field 'scanners))
+               (scanner () '(cdr (assoc lang (scanners)))))
+      (unless (scanners)
+        (rplacd (last fs)
+                (list (copy-alist '(scanners (all) (de) (en) (fr))))))
+      (unless (scanner)
+        (setf
+         (scanner)
+         (cl-ppcre:create-scanner
+          (let ((list (fs-field 'original-titles))
+                (a-titles (fs-field 'alternative-titles)))
+            (dolist (l a-titles)
+              (when (or (eq lang 'all) (eq lang (car l)))
+                (setf list (append list (cdr l)))))
+            (setf list (delete-duplicates list :test 'string-equal))
+            (format nil "(?i)~:[~;^(~]~{~a~^|~}~:[~;)$~]" exactly
+                              (mapcar 'string->reg list) exactly)))))
+      (cl-ppcre:scan (scanner) epg-title))))
 
 (defun orig-in-description ()
   "Check if original titles are in description."
@@ -203,13 +215,9 @@
       (unless
           (case c
             (title
-             (check-title (getf epg :title) (getf epg :lang)
-                          (fs-field 'original-titles)
-                          (fs-field 'alternative-titles) nil))
+             (check-title (getf epg :title) (getf epg :lang) fs nil))
             (exact-title
-             (check-title (getf epg :title) (getf epg :lang)
-                          (fs-field 'original-titles)
-                          (fs-field 'alternative-titles) t))
+             (check-title (getf epg :title) (getf epg :lang) fs t))
             (runtime
              (check-duration (getf epg :duration)
                              (fs-field 'runtimes)))
@@ -263,12 +271,12 @@
   (dolist (epg *epg*)
     (unless (getf epg :searched)
       (dolist (fs *fs-entries*)
-        (macrolet ((match-count () '(cdr (assoc 'match-count fs))))
-          (unless (match-count)
-            (rplacd (last fs) (list (cons 'match-count 0))))
-          (when (and (< (match-count) (cv :max-matches))
+        (symbol-macrolet ((match-count '(cdr (assoc 'match-count fs))))
+          (unless match-count
+            (rplacd (last fs) (copy-alist (list (cons 'match-count 0)))))
+          (when (and (< match-count (cv :max-matches))
                      (find-match fs epg))
-            (incf (match-count))
+            (incf match-count)
             (send-email fs epg))))
       (setf (getf epg :searched) t))))
 
