@@ -18,5 +18,4 @@ For example, I have these lines in my run-vdr-script, just before calling VDR:
 
 ToDo:
 
-- filmsearch.lisp (check-title): optimize (pre-compiled regular expressions)
 - imdb2fs.lisp: add support for TV Series
