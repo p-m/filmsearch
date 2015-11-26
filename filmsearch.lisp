@@ -262,7 +262,9 @@
              "Date" date "Time" time "IMDB" imdb "Timer" vdradmin
              (cl-ppcre:regex-replace-all "\\|" desc (string #\Newline)))))
       (if rcpts
-          (cl-sendmail:with-email (stream rcpts :from from :subject subject)
+          (cl-sendmail:with-email
+              (stream rcpts :from from :subject subject :other-headers
+                      (list (cons "X-filmsearch" "filmsearch")))
             (setf (cl-sendmail::content stream) content))
           (format t "~a~%" subject)))))
 
@@ -271,12 +273,12 @@
   (dolist (epg *epg*)
     (unless (getf epg :searched)
       (dolist (fs *fs-entries*)
-        (symbol-macrolet ((match-count '(cdr (assoc 'match-count fs))))
-          (unless match-count
+        (symbol-macrolet ((mc (cdr (assoc 'match-count fs))))
+          (unless mc
             (rplacd (last fs) (copy-alist (list (cons 'match-count 0)))))
-          (when (and (< match-count (cv :max-matches))
+          (when (and (< mc (cv :max-matches))
                      (find-match fs epg))
-            (incf match-count)
+            (incf mc)
             (send-email fs epg))))
       (setf (getf epg :searched) t))))
 
