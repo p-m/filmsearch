@@ -161,9 +161,10 @@
                ("([áàâ])"    . "[a\\1]")
                ("([éèêë])"   . "[e\\1]")
                ("([îï])"     . "[i\\1]")
-               ("(ôóò)"      . "[o\\1]")
+               ("([ôóò])"    . "[o\\1]")
                ("([ûúù])"    . "[u\\1]")
                ("ß"          . "(ß|ss)")
+               ("ž"          . "[zž]")
                ("([çč])"     . "[c\\1]"))))
     (dolist (m map)
       (setf s (cl-ppcre:regex-replace-all (format nil "(?i)~a" (car m))
@@ -197,13 +198,23 @@
   "Check if original titles are in description."
   )
 
+;(defun check-all-keywords (description fs)
 (defun check-all-keywords ()
   "Check if all keywords are in description."
   )
 
-(defun check-one-keyword ()
+(defun check-one-keyword (description fs)
   "Check if at least one keyword is in description."
-  )
+  (macrolet ((fs-field (x) `(cdr (assoc ,x fs)))
+             (scanner () '(fs-field 'one-keyword-scanner)))
+    (unless (scanner)
+      (rplacd
+       (last fs)
+       (list (cons 'one-keyword-scanner
+                   (cl-ppcre:create-scanner
+                    (format nil "(?i)~{~a~^|~}"
+                            (mapcar 'string->reg (fs-field 'one-keyword))))))))
+    (cl-ppcre:scan (scanner) description)))
 
 (defun find-match (fs epg)
   "Try to find a match."
@@ -220,18 +231,13 @@
              (check-title (getf epg :title) (getf epg :lang) fs nil))
             (exact-title
              (check-title (getf epg :title) (getf epg :lang) fs t))
-            (runtime
-             (check-duration (getf epg :duration)
-                             (fs-field 'runtimes)))
-            (year
-             (check-year (getf epg :description)
-                         (fs-field 'release-years)))
-            (orig-desc
-             (orig-in-description))
-            (all-keywords
-             (check-all-keywords))
-            (one-keyword
-             (check-one-keyword)))
+            (runtime (check-duration (getf epg :duration)
+                                     (fs-field 'runtimes)))
+            (year (check-year (getf epg :description)
+                              (fs-field 'release-years)))
+            (orig-desc (orig-in-description))
+;           (all-keywords (check-all-keywords (getf epg :description) fs))
+            (one-keyword (check-one-keyword (getf epg :description) fs)))
         (return)))))
 
 (defun send-email (fs epg)
