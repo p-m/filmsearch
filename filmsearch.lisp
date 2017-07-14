@@ -19,7 +19,7 @@
       :max-matches      4) "default values")
   (defconstant +imdb-pre+ "http://akas.imdb.com/title/tt" "IMDB prefix.")
   (defconstant +vdr-admin-page+
-    "http://~a/vdradmin.pl?aktion=timer_new_form&epg_id=~a&vdr_id=~a"
+    "http://~a/vdradmin.pl?aktion=timer_new_form&epg_id=~a&vdr_id=~a&imdb=~a"
     "page for creating a timer")
   (defconstant +unix-epoch-difference+ (encode-universal-time 0 0 0 1 1 1970 0)
     "difference between unix and common lisp"))
@@ -84,17 +84,17 @@
   (find-if (lambda (x) (cl-ppcre:scan (format nil "^~a(,.*|;.*)?$" name)
                                       (getf x :name))) *channels*))
 
-(defun universal-to-unix-time (universal-time)
+(defun universal->unix-time (universal-time)
   "Conversion from universal time to unix time."
   (- universal-time +unix-epoch-difference+))
 
-(defun unix-to-universal-time (unix-time)
+(defun unix->universal-time (unix-time)
   "Conversion from unix time to universal time."
   (+ unix-time +unix-epoch-difference+))
 
 (defun get-unix-time ()
   "Get current unix time."
-  (universal-to-unix-time (get-universal-time)))
+  (universal->unix-time (get-universal-time)))
 
 (defun check-date (start)
   "Check if date is not too far in the future."
@@ -122,7 +122,7 @@
             (#\e (when (and channel (check-date start))
                    (setf list (list :id id :start start :duration duration
                                     :title title :channel cn :description
-                                    (format nil "~@[~a ~]~@[~a~]"
+                                    (format nil "~@[~a|~]~@[~a~]"
                                             short description)
                                     :channel-number (getf channel :num)
                                     :lang (getf channel :lang))))
@@ -146,26 +146,33 @@
 (defun check-year (d years)
   "Check the release year."
   (if years
-      (cl-ppcre:scan (format nil "~{~a~^|~}"
-                             (loop for i from (1- (apply 'min years)) to
-                                  (1+ (apply 'max years)) collect i)) d)
+      (if (cl-ppcre:scan (format nil "~{~a~^|~}"
+                                 (loop for i from (- (apply 'min years) 2) to
+                                      (+ (apply 'max years) 2) collect i)) d)
+          t
+          (not (cl-ppcre:scan "[^0-9](1[89]|2[01])[0-9]{2}[^0-9]" d)))
       t))
 
 (defun string->reg (s)
   "Convert string to regular expression."
-  (let ((map '(("([:.!,?])"  . "[\\1]?")
-               ("[’'–]"      . ".")
-               ("([+|])"     . "[\\1]")
-               ("( [*-/] )"  . "(\\1| )")
-               ("([*])"      . "[\\1]")
-               ("([áàâ])"    . "[a\\1]")
-               ("([éèêë])"   . "[e\\1]")
-               ("([îï])"     . "[i\\1]")
-               ("([ôóò])"    . "[o\\1]")
-               ("([ûúù])"    . "[u\\1]")
-               ("ß"          . "(ß|ss)")
-               ("ž"          . "[zž]")
-               ("([çč])"     . "[c\\1]"))))
+  (let ((map '(("([:.!,?()])"   . "[\\1]?")
+               ("[’'–_]"        . ".")
+               ("([+|])"        . "[\\1]")
+               ("( [*-/] )"     . "(\\1| )")
+               ("([*])"         . "[\\1]")
+               ("([áàâ])"       . "[a\\1]")
+               ("([éèêë])"      . "[e\\1]")
+               ("([îïíìıİ])"    . "[i\\1]")
+               ("([ôóò])"       . "[o\\1]")
+               ("([ûúù])"       . "[u\\1]")
+               ("([ţ])"         . "[t\\1]")
+               ("([ý])"         . "[y\\1]")
+               ("æ"             . "(æ|ae)")
+               ("œ"             . "(œ|oe)")
+               ("ß"             . "(ß|ss)")
+               ("ş"             . "[sş]")
+               ("ž"             . "[zž]")
+               ("([çč])"        . "[c\\1]"))))
     (dolist (m map)
       (setf s (cl-ppcre:regex-replace-all (format nil "(?i)~a" (car m))
                                           s (cdr m)))))
@@ -184,14 +191,17 @@
         (setf
          (scanner)
          (cl-ppcre:create-scanner
-          (let ((list (fs-field 'original-titles))
-                (a-titles (fs-field 'alternative-titles)))
-            (dolist (l a-titles)
-              (when (or (eq lang 'all) (eq lang (car l)))
-                (setf list (append list (cdr l)))))
-            (setf list (delete-duplicates list :test 'string-equal))
-            (format nil "(?i)~:[~;^(~]~{~a~^|~}~:[~;)$~]" exactly
-                              (mapcar 'string->reg list) exactly)))))
+          (or (fs-field 'title-regex)
+              (let ((list (fs-field 'titles))
+                    (a-titles (fs-field 'alt-titles)))
+;                (unless list
+;                  (format t "Has no title: ~a!~%" (cdr (assoc 'id fs))))
+                (dolist (l a-titles)
+                  (when (or (eq lang 'all) (eq lang (car l)))
+                    (setf list (append list (cdr l)))))
+                (setf list (delete-duplicates list :test 'string-equal))
+                (format nil "(?i)~:[~;^(~]~{~a~^|~}~:[~;)$~]" exactly
+                        (mapcar 'string->reg list) exactly))))))
       (cl-ppcre:scan (scanner) epg-title))))
 
 (defun orig-in-description ()
@@ -243,12 +253,12 @@
 (defun send-email (fs epg)
   "Send email about a match."
   (multiple-value-bind (s m h d mm y) (decode-universal-time
-                                       (unix-to-universal-time
+                                       (unix->universal-time
                                         (getf epg :start)))
     (declare (ignore s))
     (let* ((title (getf epg :title))
-           (imdb-id (caddr (assoc 'ids fs)))
-           (imdb-title (cdr (assoc 'imdb-title fs)))
+           (imdb-id (cdr (assoc 'id fs)))
+           (o-title (cadr (assoc 'titles fs)))
            (years (cdr (assoc 'release-years fs)))
            (epg-id (getf epg :id))
            (to (cv :email-to)) (from (cv :email-from))
@@ -258,9 +268,9 @@
            (date (format nil "~2,'0d-~2,'0d-~4,'0d" d mm y))
            (time (format nil "~2,'0d:~2,'0d" h m))
            (vdradmin (format nil +vdr-admin-page+ (cv :vdradmin-host)
-                             epg-id channel-number))
+                             epg-id channel-number imdb-id))
            (imdb (format nil "~a~a/~@[  (~a)~]~@[ ~a~]" +imdb-pre+ imdb-id
-                         imdb-title years))
+                         o-title years))
            (desc (getf epg :description))
            (subject (format nil "[FS] ~a: ~a" date title))
            (content

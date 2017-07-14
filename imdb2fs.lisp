@@ -125,17 +125,17 @@ attribute."
 
 (defun check-entry (e)
   "Check the new entry."
-  (let* ((imdb-id (caddr (assoc 'ids e)))
+  (let* ((imdb-id (cdr (assoc 'id e)))
          (url1 (format nil "~a~a/" +imdb-pre+ imdb-id))
          (url2 (format nil "~areleaseinfo#akas" url1))
          (firefox (list "-new-tab" url1 "-new-tab" url2))
-         (imdb-title (cdr (assoc 'imdb-title e)))
+         (title (cadr (assoc 'titles e)))
          (wiki-temp "https://~a.wikipedia.org/wiki/Spezial:~a?search=~a")
          (wikis
-          (list "-new-tab" (format nil wiki-temp "de" "Suche" imdb-title)
-                "-new-tab" (format nil wiki-temp "en" "Search" imdb-title)))
-         (o-lang (cdr (assoc 'original-lang e)))
-         (akas (cdr (assoc 'alternative-titles e)))
+          (list "-new-tab" (format nil wiki-temp "de" "Suche" title)
+                "-new-tab" (format nil wiki-temp "en" "Search" title)))
+         (o-lang (cdr (assoc 'lang e)))
+         (akas (cdr (assoc 'alt-titles e)))
          (runtimes (cdr (assoc 'runtimes e)))
          (years (cdr (assoc 'release-years e)))
          flag)
@@ -145,7 +145,7 @@ attribute."
              (or (null nums)
                  (and (= (length nums) 2)
                       (> (abs (- (car nums) (cadr nums))) max-diff)))))
-      (when (/= (length (cdr (assoc 'original-titles e))) 1)
+      (when (/= (length (cdr (assoc 'titles e))) 1)
         (problem "check original title"))
       (if (stringp o-lang)
           (when (and (string/= o-lang "de") (null (cdr (assoc 'de akas))))
@@ -190,15 +190,14 @@ attribute."
     (alist-add 'release-years (unique (check-year release-date) imdb-year))
     (alist-add 'runtimes (unique (cdr (assoc :runtime movie-results2))
                                  (get-runtime imdb)))
-    (alist-add 'alternative-titles (get-akas tmdb-akas imdb-akas))
-    (alist-add 'ids (list id imdb-id))
-    (alist-add 'original-lang
+    (alist-add 'alt-titles (get-akas tmdb-akas imdb-akas))
+    (alist-add 'id imdb-id)
+    (alist-add 'lang
                (or (get-lang imdb)
                    (cdr (assoc :original--language movie-results))))
-    (alist-add 'original-titles
+    (alist-add 'titles
                (unique (cdr (assoc :original--title movie-results))
                        (get-orig-title imdb-akas)))
-    (alist-add 'imdb-title imdb-title)
     alist))
 
 (defun main ()
