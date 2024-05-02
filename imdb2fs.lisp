@@ -1,212 +1,155 @@
 ":"; C="exec sbcl --noinform --end-runtime-options --disable-debugger"
 ":"; $C --load "$0" --eval '(main)' --quit --end-toplevel-options "$@"
 
-;; example usage:
-;; - put your IMDB-IDs in /tmp/imdb-ids
-;; - call "imdb2fs.lisp"
-;; - get your filmsearch-entries from /tmp/fs-entries
+(let ((*compile-verbose* nil))
+  (dolist (package '(:gzip-stream :cl-csv :flexi-streams))
+    (require package)))
 
-(dolist (package '(:cl-ppcre :drakma :cl-json :plump-dom :plump-sexp))
-  (require package))
-(unless (constantp '+input+)
-  (defconstant +input+ (or (second sb-ext:*posix-argv*) "/tmp/imdb-ids")
-    "File with IMDB-IDs.")
-  (defconstant +output+ (or (third sb-ext:*posix-argv*) "/tmp/fs-entries")
-    "File with resulting fs-entries.")
-  (defconstant +imdb-pre+ "http://akas.imdb.com/title/tt" "IMDB prefix.")
-  (defconstant +tmdb-pre+ "https://api.themoviedb.org/3/" "TMDB prefix.")
-  (defconstant +tmdb-keyfile+ (or (fourth sb-ext:*posix-argv*) "/tmp/tmdb-key")
-    "File with TMDB key.")
-  (defconstant +tmdb-key+ (when (probe-file +tmdb-keyfile+)
-                            (format nil "?api_key=~a"
-                                    (with-open-file (in +tmdb-keyfile+)
-                                      (read-line in))))
-    "API key for TMDB."))
+(defvar *config*        nil "configuration list")
+(defvar *fs-entries*    nil "filmsearch entries")
+(defvar *imdb-ids*      nil)
+(defvar *title-akas*    nil)
+(defvar *title-basics*  nil)
+(defvar *title-ratings* nil)
+(defvar *config-file*
+  (merge-pathnames ".config/imdb2fs.conf" (user-homedir-pathname))
+  "configuration file")
 
-(defun get-match (reg text)
-  "Get a regex match from multi-line text."
-  (multiple-value-bind (dummy v) (cl-ppcre:scan-to-strings reg text)
-    (declare (ignore dummy))
-    (when v (elt v 0))))
+(defun read-config ()
+  "Read configuration from configuration file."
+  (with-open-file (in *config-file*)
+    (with-standard-io-syntax
+      (setf *config* (read in)))))
 
-(defun get-imdb-title (imdb)
-  "Get title (with year) from IMDB."
-  (get-match "<meta property='og:title' content=\"(.*)\" />" imdb))
+(defun cv (name)
+  "Get configuration value."
+  (getf *config* name))
 
-(defun get-runtime (imdb)
-  "Get runtime from imdb."
-  (let ((match
-            (get-match
-             "<time itemprop=\"duration\" datetime=\".*\">([0-9]+) min</time>"
-             imdb)))
-    (when (stringp match)
-      (parse-integer match :junk-allowed t))))
+(defun fetch-row (stream)
+  (cl-csv:read-csv-row stream :separator #\Tab :quote nil))
 
-(defun get-lang (imdb)
-  "Get original lang from imdb."
-  (get-match "<a href=\"/language/([a-z]{2})\\?ref.*\"" imdb))
+(defun read-gz (file)
+  (gzip-stream:with-open-gzip-file (raw (format nil "~a/title.~a.tsv.gz"
+                                                (cv :imdb-dir) file))
+    (do* ((utf8  (flexi-streams:make-flexi-stream raw :external-format :utf-8))
+          (first (fetch-row utf8))
+          (row   (fetch-row utf8)
+                 (handler-case (fetch-row utf8)
+                   (end-of-file (c) (declare (ignore c)))))
+          res)
+         ((null row) (push first res))
+      (if (member (car row) *imdb-ids* :test #'string-equal)
+          (push row res)))))
 
-(defun get-json (url)
-  "Get list from json url."
-  (when +tmdb-key+
-    (let ((stream (drakma:http-request url :want-stream t)))
-      (setf (flexi-streams:flexi-stream-external-format stream) :utf-8)
-      (cl-json:decode-json stream))))
+(defun create-lists ()
+  (with-open-file (in (cv :imdb-ids))
+    (do ((imdb-id (read-line in) (read-line in nil)))
+        ((null imdb-id))
+      (push imdb-id *imdb-ids*)))
+  (setf *title-basics*  (read-gz "basics")
+        *title-akas*    (read-gz "akas")
+        *title-ratings* (read-gz "ratings"))
+  (with-open-file (in (cv :entries))
+    (with-standard-io-syntax
+      (setf *fs-entries* (read in)))))
 
-(defmacro alist-add (key value)
-  "Add key-value pair to alist."
-  `(push (cons ,key ,value) alist))
+(defun ensure-list (object)
+  (if (listp object)
+      object
+      (list object)))
 
-(defmacro alist-get (key)
-  "Get value of key from alist."
-  `(cdr (assoc ,key alist)))
+(defmacro make-item (x)
+  `(append '(,x) (ensure-list ,x)))
 
-(defun check-year (year)
-  "Check year and return it if it's ok."
-  (when (stringp year)
-    (let ((y (parse-integer year :junk-allowed t)))
-      (when (and y (< 1000 y 3000))
-        y))))
+(defun get-entry (id)
+  (let ((labels (car *title-basics*))
+        (entry (find id (cdr *title-basics*) :test #'string-equal
+                                             :key (lambda (x) (car x)))))
+    (list labels entry)))
 
-(defun get-table-by-id (node id)
-  "Searches the given node and returns the first
-table at arbitrary depth that matches the given ID
-attribute."
-  (labels ((scanren (node)
-             (loop for child across (plump-dom:children node)
-                do (when (plump-dom:element-p child)
-                     (let ((cid (plump-dom:attribute child "id")))
-                       (when (and (string-equal id cid)
-                                  (string-equal "table"
-                                                (plump-dom:tag-name child)))
-                         (return-from get-table-by-id child)))
-                     (scanren child)))))
-    (scanren node))
-  nil)
+(defun get-field (name entry)
+  "Entry is a list with labels and the real entry."
+  (let ((index (position name (car entry) :test #'string-equal)))
+    (nth index (cadr entry))))
 
-(defun get-table-entries (reg table)
-  "Get table entries from imdb release-info, that match reg."
-  (loop for e in table
-     when (and (listp e)                (listp (car e))
-               (eq (caar e) :tr)        (eq (caaddr e) :td)
-               (eq (car (nth 4 e)) :td)
-               (cl-ppcre:scan (format nil "(?i)~a" reg) (cadr (nth 2 e))))
-     collect (cadr (nth 4 e))))
+(defun akas-field (name entry)
+  (let ((index (position name (car *title-akas*) :test #'string-equal)))
+    (nth index entry)))
 
-(defun get-tmdb-akas (reg list)
-  "Get list entries from tmdb akas-list, that match reg."
-  (loop for e in list
-     when (and (listp e)                (listp (car e))
-               (cl-ppcre:scan (format nil "(?i)~a" reg) (cdar e)))
-     collect (cdadr e)))
-
-(defun unique (&rest args)
+(defun unique (list)
   "Remove duplicates and NILs."
-  (let* ((res (delete-if 'null args)))
-    (delete-duplicates res :test (if (numberp (car res))
-                                      '= 'string-equal))))
+  (delete-duplicates (delete-if #'null list) :test #'string-equal))
 
-(defun get-akas (tmdb imdb)
-  "Get all the alternative titles."
-  (let (res (regs '((de tmdb "at|de" imdb "german|austria")
-                    (en tmdb "gb|us" imdb "english|usa")
-                    (fr tmdb "fr"    imdb "france|french"))))
-    (dolist (e regs res)
-      (let* ((key (car e)) (plist (cdr e))
-             (t-reg (getf plist 'tmdb)) (i-reg (getf plist 'imdb)))
-        (push (cons key (apply
-                         'unique (append (get-tmdb-akas t-reg tmdb)
-                                         (get-table-entries i-reg imdb))))
-              res)))))
+(defun get-titles (entry)
+  (unique (list (get-field "primaryTitle" entry)
+                (get-field "originalTitle" entry))))
 
-(defun get-orig-title (imdb)
-  "Get original title from imdb titles."
-  (car (get-table-entries "original title" imdb)))
+(defun get-integer (field entry)
+  (let ((number (get-field field entry)))
+    (if number (parse-integer number :junk-allowed t))))
 
-(defun check-entry (e)
-  "Check the new entry."
-  (let* ((imdb-id (cdr (assoc 'id e)))
-         (url1 (format nil "~a~a/" +imdb-pre+ imdb-id))
-         (url2 (format nil "~areleaseinfo#akas" url1))
-         (firefox (list "-new-tab" url1 "-new-tab" url2))
-         (title (cadr (assoc 'titles e)))
-         (wiki-temp "https://~a.wikipedia.org/wiki/Spezial:~a?search=~a")
-         (wikis
-          (list "-new-tab" (format nil wiki-temp "de" "Suche" title)
-                "-new-tab" (format nil wiki-temp "en" "Search" title)))
-         (o-lang (cdr (assoc 'lang e)))
-         (akas (cdr (assoc 'alt-titles e)))
-         (runtimes (cdr (assoc 'runtimes e)))
-         (years (cdr (assoc 'release-years e)))
-         flag)
-    (flet ((problem (text)
-             (setf flag t) (format t "~a: ~a~%" imdb-id text))
-           (check-numbers (nums max-diff)
-             (or (null nums)
-                 (and (= (length nums) 2)
-                      (> (abs (- (car nums) (cadr nums))) max-diff)))))
-      (when (/= (length (cdr (assoc 'titles e))) 1)
-        (problem "check original title"))
-      (if (stringp o-lang)
-          (when (and (string/= o-lang "de") (null (cdr (assoc 'de akas))))
-            (problem "no german title")
-            (nconc firefox wikis))
-          (problem "check original languages"))
-      (when (check-numbers runtimes 15)
-        (problem "check runtime"))
-      (when (check-numbers years 1)
-        (problem "check release-years")))
-    (when flag
-      (run-program "firefox" firefox :search t))))
+(defun get-year (entry)
+  (get-integer "startYear" entry))
 
-(defun imdb-id->entry (imdb-id)
+(defun get-runtime (entry)
+  (get-integer "runtimeMinutes" entry))
+
+(defun parse-float (string)
+  (if string
+      (with-input-from-string (in string) (read in))))
+
+(defun get-rating (id)
+  (parse-float (cadr (find id (cdr *title-ratings*)
+                           :test #'string-equal :key (lambda (x) (car x))))))
+
+(defun check-lang (lang regions entry)
+  (let ((region   (akas-field "region"   entry))
+        (language (akas-field "language" entry)))
+    (or (string-equal lang language)
+        (and (string-equal language "\\N")
+             (member region regions :test #'string-equal)))))
+
+(defun get-akas (id orig-titles)
+  (let* ((akas1 (remove id *title-akas* :test #'string-not-equal :key #'car))
+         (akas2 (remove-if #'(lambda (x)
+                               (member x orig-titles :test #'string-equal))
+                           akas1 :key #'(lambda (x) (akas-field "title" x))))
+         res)
+    (dolist (lang (cv :languages) res)
+      (let* ((lang-id  (car lang))
+             (regions  (cdr lang))
+             (lang-str (symbol-name lang-id))
+             (entries  (remove-if-not
+                        #'(lambda (x) (check-lang lang-str regions x))
+                        akas2))
+             (titles   (unique (mapcar #'(lambda (x)
+                                           (akas-field "title" x)) entries))))
+        (push lang-id titles)
+        (push titles res)))))
+
+(defun imdb-id->entry (id)
   "Create new fs-entry from imdb-id."
-  (let* (alist imdb-title imdb-year
-         (imdb (drakma:http-request (format nil "~a~a/" +imdb-pre+ imdb-id)))
-         (imdb-title-year (get-imdb-title imdb))
-         (movie (get-json (format nil "~afind/tt~a~a&external_source=imdb_id"
-                                  +tmdb-pre+ imdb-id +tmdb-key+)))
-         (movie-results (cadr (assoc :movie--results movie)))
-         (id (write-to-string (cdr (assoc :id movie-results))))
-         (movie-results2 (get-json (format nil "~amovie/~a~a"
-                                           +tmdb-pre+ id +tmdb-key+)))
-         (release-date (cdr (assoc :release--date movie-results2)))
-         (tmdb-akas
-          (cdr (assoc :titles
-                      (get-json (format nil "~amovie/~a/alternative_titles~a"
-                                        +tmdb-pre+ id +tmdb-key+)))))
-         (imdb-akas
-          (let ((akas
-                 (get-table-by-id
-                  (plump:parse (drakma:http-request
-                                (format nil "~a~a/releaseinfo" +imdb-pre+
-                                        imdb-id))) "akas")))
-            (when akas (plump-sexp:serialize akas)))))
-    (multiple-value-bind (dummy v) (cl-ppcre:scan-to-strings
-                                    "^(.*) \\((TV Movie )?([0-9]*)\\)$"
-                                    imdb-title-year)
-      (declare (ignore dummy))
-      (when v (setf imdb-title (elt v 0) imdb-year (check-year (elt v 2)))))
-    (alist-add 'release-years (unique (check-year release-date) imdb-year))
-    (alist-add 'runtimes (unique (cdr (assoc :runtime movie-results2))
-                                 (get-runtime imdb)))
-    (alist-add 'alt-titles (get-akas tmdb-akas imdb-akas))
-    (alist-add 'id imdb-id)
-    (alist-add 'lang
-               (or (get-lang imdb)
-                   (cdr (assoc :original--language movie-results))))
-    (alist-add 'titles
-               (unique (cdr (assoc :original--title movie-results))
-                       (get-orig-title imdb-akas)))
-    alist))
+  (let* ((entry   (get-entry   id))
+         (titles  (get-titles  entry))
+         (year    (get-year    entry))
+         (runtime (get-runtime entry))
+         (rating  (get-rating  id))
+         (akas    (get-akas    id titles)))
+    (nconc (list (make-item titles) (list 'id id) (make-item year)
+                 (make-item runtime)) (if rating (list (make-item rating)))
+                 (list (make-item akas)))))
 
 (defun main ()
   "Main program."
-  (with-open-file (in +input+)
-    (with-open-file (out +output+ :direction :output :if-exists :supersede)
-      (loop for imdb-id = (read-line in nil)
-         while imdb-id do
-           (let ((*print-case* :downcase)
-                 (entry (imdb-id->entry imdb-id)))
-             (check-entry entry)
-             (pprint entry out))))))
+  (if (second sb-ext:*posix-argv*)
+      (setf *config-file* (second sb-ext:*posix-argv*)))
+  (read-config)
+  (create-lists)
+  (setf *print-case* :downcase)
+  (dolist (id *imdb-ids*)
+    (let ((entry (imdb-id->entry id)))
+      (pprint entry))))
+
+;; Local Variables:
+;; pm/slime-auto-load: t
+;; End:
