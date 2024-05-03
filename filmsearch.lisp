@@ -1,23 +1,19 @@
 ":"; C="exec sbcl --noinform --end-runtime-options --disable-debugger"
 ":"; $C --load "$0" --eval '(main)' --quit --end-toplevel-options "$@"
 
-;; example usage: "filmsearch.lisp config-file"
-
-(with-open-file (*standard-output*
-                 "/dev/null" :direction :output :if-exists :append)
-  (dolist (package '(:cl-ppcre :cl-csv :cl-sendmail))
+(let ((*compile-verbose* nil))
+  (dolist (package '(:cl-ppcre :cl-csv))
     (require package)))
-(unless (constantp '+config-file+)
-  (defconstant +config-file+ (second sb-ext:*posix-argv*)
-    "configuration file")
+
+(unless (constantp '+defaults+)
   (defconstant +defaults+
-    '(:channels         "/vdr/etc/channels.conf"
+    '(:channels         "/etc/vdr/channels.conf"
       :epg-data-file    "/var/cache/vdr/epg.data"
-      :epg-lisp-file    "/dev/shm/filmsearch/epg"
-      :fs-entries       "/dev/shm/filmsearch/entries"
+      :epg-lisp-file    "/tmp/epg.lisp"
+      :fs-entries       "/tmp/entries"
       :max-days         4
       :max-matches      4) "default values")
-  (defconstant +imdb-pre+ "http://akas.imdb.com/title/tt" "IMDB prefix.")
+  (defconstant +imdb-pre+ "https://www.imdb.com/title/" "IMDB prefix.")
   (defconstant +vdr-admin-page+
     "http://~a/vdradmin.pl?aktion=timer_new_form&epg_id=~a&vdr_id=~a&imdb=~a"
     "page for creating a timer")
@@ -27,11 +23,14 @@
 (defvar *epg*            nil            "epg data")
 (defvar *channels*       nil            "informations about channels")
 (defvar *fs-entries*     nil            "filmsearch entries")
+(defvar *config-file*
+  (merge-pathnames ".config/filmsearch.conf" (user-homedir-pathname))
+  "configuration file")
 
 (defun read-config ()
   "Read configuration from configuration file."
-  (when +config-file+
-    (with-open-file (in +config-file+)
+  (when *config-file*
+    (with-open-file (in *config-file*)
       (with-standard-io-syntax
         (setf *config* (read in))))))
 
@@ -137,18 +136,20 @@
   (setf *epg*
         (remove-if-not (lambda (x) (check-date (getf x :start))) *epg*)))
 
-(defun check-duration (d runtimes)
+(defun check-duration (d runtime)
   "Check the duration."
-  (if runtimes
-      (> d (* 60 8/10 (apply 'min runtimes)))
+  (if runtime
+      (> d (* 60 8/10 runtime))
       t))
 
 (defun check-year (d years)
   "Check the release year."
   (if years
-      (if (cl-ppcre:scan (format nil "~{~a~^|~}"
-                                 (loop for i from (- (apply 'min years) 2) to
-                                      (+ (apply 'max years) 2) collect i)) d)
+      (if (cl-ppcre:scan
+           (format nil "~{~a~^|~}"
+                   (loop for i from (- (apply 'min years) 2)
+                           to (+ (apply 'max years) 2)
+                         collect i)) d)
           t
           (not (cl-ppcre:scan "[^0-9](1[89]|2[01])[0-9]{2}[^0-9]" d)))
       t))
@@ -181,8 +182,9 @@
 (defun check-title (epg-title epg-lang fs exactly)
   "Check title for a match."
   (let ((lang (if epg-lang (intern (string-upcase epg-lang)) 'all)))
-    (macrolet ((fs-field (x) `(cdr (assoc ,x fs)))
-               (scanners () '(fs-field 'scanners))
+    (macrolet ((fs-field1 (x) `(cdr (assoc ,x fs)))
+               (fs-field2 (x) `(car (fs-field1 ,x)))
+               (scanners () '(fs-field1 'scanners))
                (scanner () '(cdr (assoc lang (scanners)))))
       (unless (scanners)
         (rplacd (last fs)
@@ -191,12 +193,10 @@
         (setf
          (scanner)
          (cl-ppcre:create-scanner
-          (or (fs-field 'title-regex)
-              (let ((list (fs-field 'titles))
-                    (a-titles (fs-field 'alt-titles)))
-;                (unless list
-;                  (format t "Has no title: ~a!~%" (cdr (assoc 'id fs))))
-                (dolist (l a-titles)
+          (or (fs-field2 'title-regex)
+              (let ((list (fs-field1 'titles))
+                    (akas (fs-field1 'akas)))
+                (dolist (l akas)
                   (when (or (eq lang 'all) (eq lang (car l)))
                     (setf list (append list (cdr l)))))
                 (setf list (delete-duplicates list :test 'string-equal))
@@ -228,41 +228,38 @@
 
 (defun find-match (fs epg)
   "Try to find a match."
-  (macrolet ((fs-field (x) `(cdr (assoc ,x fs)))
-             (checks () '(fs-field 'checks)))
+  (macrolet ((fs-field1 (x) `(cdr (assoc ,x fs)))
+             (fs-field2 (x) `(car (fs-field1 ,x)))
+             (checks () '(fs-field1 'checks)))
     (unless (checks)
       (rplacd (last fs) (list (list 'checks 'title))))
     (dolist (c '(all-keywords one-keyword))
-      (if (fs-field c) (pushnew c (checks))))
+      (if (fs-field1 c) (pushnew c (checks))))
     (dolist (c (checks) t)
       (unless
           (case c
-            (title
-             (check-title (getf epg :title) (getf epg :lang) fs nil))
-            (exact-title
-             (check-title (getf epg :title) (getf epg :lang) fs t))
+            (title (check-title (getf epg :title) (getf epg :lang) fs
+                                 (fs-field2 'exact-title)))
             (runtime (check-duration (getf epg :duration)
-                                     (fs-field 'runtimes)))
+                                     (fs-field2 'runtime)))
             (year (check-year (getf epg :description)
-                              (fs-field 'release-years)))
+                              (fs-field1 'years)))
             (orig-desc (orig-in-description))
 ;           (all-keywords (check-all-keywords (getf epg :description) fs))
             (one-keyword (check-one-keyword (getf epg :description) fs)))
         (return)))))
 
-(defun send-email (fs epg)
-  "Send email about a match."
-  (multiple-value-bind (s m h d mm y) (decode-universal-time
-                                       (unix->universal-time
-                                        (getf epg :start)))
+(defun print-match (fs epg)
+  "Print infos about a match."
+  (multiple-value-bind (s m h d mm y)
+      (decode-universal-time (unix->universal-time (getf epg :start)))
     (declare (ignore s))
     (let* ((title (getf epg :title))
-           (imdb-id (cdr (assoc 'id fs)))
-           (o-title (cadr (assoc 'titles fs)))
-           (years (cdr (assoc 'release-years fs)))
+           (imdb-id (cadr (assoc 'id fs)))
+           (o-title (format nil "~{~a~^ / ~}" (cdr (assoc 'titles fs))))
+           (years (cdr (assoc 'years fs)))
+           (rating (cadr (assoc 'rating fs)))
            (epg-id (getf epg :id))
-           (to (cv :email-to)) (from (cv :email-from))
-           (rcpts (append (and to (list to)) (cdr (assoc 'emails fs))))
            (channel-number (getf epg :channel-number))
            (channel-name (getf epg :channel))
            (date (format nil "~2,'0d-~2,'0d-~4,'0d" d mm y))
@@ -277,14 +274,10 @@
             (format
              nil "~@[~%*** ~a ***~%~%~]~@{~#[~;~%~a~%~:;~7a:   ~a~%~]~}"
              (cdr (assoc 'comment fs)) "Title" title "Channel" channel-name
-             "Date" date "Time" time "IMDB" imdb "Timer" vdradmin
+             "Date" date "Time" time "Rating" rating "IMDB" imdb "Timer"
+             vdradmin
              (cl-ppcre:regex-replace-all "\\|" desc (string #\Newline)))))
-      (if rcpts
-          (cl-sendmail:with-email
-              (stream rcpts :from from :subject subject :other-headers
-                      (list (cons "X-filmsearch" "filmsearch")))
-            (setf (cl-sendmail::content stream) content))
-          (format t "~a~%" subject)))))
+      (format t "~a~%~a~%~%" subject content))))
 
 (defun search-films ()
   "Do the search."
@@ -297,7 +290,7 @@
           (when (and (< mc (cv :max-matches))
                      (find-match fs epg))
             (incf mc)
-            (send-email fs epg))))
+            (print-match fs epg))))
       (setf (getf epg :searched) t))))
 
 (defun filmsearch ()
@@ -327,8 +320,14 @@
 
 (defun main ()
   "Main program."
+  (if (second sb-ext:*posix-argv*)
+      (setf *config-file* (second sb-ext:*posix-argv*)))
   (read-config)
   (when (new-epg)
     (setf *channels* (read-channels)
           *fs-entries* (read-fs))
     (filmsearch)))
+
+;; Local Variables:
+;; pm/slime-auto-load: t
+;; End:
