@@ -58,7 +58,7 @@
          do (loop-finish))))
 
 (defun get-lang (apid)
-  "Get main-language from APID."
+  "Get main-language from APID. Todo: de/en/fr are still hard-coded here."
   (multiple-value-bind (l r)
       (cl-ppcre:regex-replace "^[^=]*=(fr|de|en).*$" apid "\\1")
     (when r
@@ -179,30 +179,40 @@
                                           s (cdr m)))))
   s)
 
-(defun check-title (epg-title epg-lang fs exactly)
-  "Check title for a match."
-  (let ((lang (if epg-lang (intern (string-upcase epg-lang)) 'all)))
-    (macrolet ((fs-field1 (x) `(cdr (assoc ,x fs)))
-               (fs-field2 (x) `(car (fs-field1 ,x)))
-               (scanners () '(fs-field1 'scanners))
-               (scanner () '(cdr (assoc lang (scanners)))))
-      (unless (scanners)
-        (rplacd (last fs)
-                (list (copy-alist '(scanners (all) (de) (en) (fr))))))
-      (unless (scanner)
-        (setf
-         (scanner)
-         (cl-ppcre:create-scanner
-          (or (fs-field2 'title-regex)
-              (let ((list (fs-field1 'titles))
-                    (akas (fs-field1 'akas)))
-                (dolist (l akas)
-                  (when (or (eq lang 'all) (eq lang (car l)))
-                    (setf list (append list (cdr l)))))
-                (setf list (delete-duplicates list :test 'string-equal))
-                (format nil "(?i)~:[~;^(~]~{~a~^|~}~:[~;)$~]" exactly
-                        (mapcar 'string->reg list) exactly))))))
-      (cl-ppcre:scan (scanner) epg-title))))
+(defun epg-lang (epg)
+  (let ((lang (getf epg :lang)))
+    (if lang
+        (intern (string-upcase lang))
+        'all)))
+
+(defun check-title (epg-title lang fs exactly)
+  "Check title for a match. Todo: de/en/fr are still hard-coded here."
+  (macrolet ((fs-field1 (x) `(cdr (assoc ,x fs)))
+             (fs-field2 (x) `(car (fs-field1 ,x)))
+             (scanners () '(fs-field1 'scanners))
+             (scanner () '(cdr (assoc lang (scanners))))
+             (regexs () '(fs-field1 'regexs))
+             (regex () '(cdr (assoc lang (regexs)))))
+    (unless (scanners)
+      (rplacd (last fs)
+              (list (copy-alist '(scanners (all) (de) (en) (fr)))
+                    (copy-alist '(regexs (all) (de) (en) (fr))))))
+    (unless (scanner)
+      (setf
+       (scanner)
+       (cl-ppcre:create-scanner
+        (setf (regex)
+              (or (fs-field2 'title-regex)
+                  (let ((list (fs-field1 'titles))
+                        (akas (fs-field1 'akas)))
+                    (dolist (l akas)
+                      (when (or (eq lang 'all) (eq lang (car l)))
+                        (setf list (append list (cdr l)))))
+                    (setf list (delete-duplicates list :test 'string-equal))
+                    (format nil "~:[~;^(~]~{~a~^|~}~:[~;)$~]" exactly
+                            (mapcar 'string->reg list) exactly))))
+        :case-insensitive-mode t)))
+    (cl-ppcre:scan (scanner) epg-title)))
 
 (defun orig-in-description ()
   "Check if original titles are in description."
@@ -222,8 +232,9 @@
        (last fs)
        (list (cons 'one-keyword-scanner
                    (cl-ppcre:create-scanner
-                    (format nil "(?i)~{~a~^|~}"
-                            (mapcar 'string->reg (fs-field 'one-keyword))))))))
+                    (format nil "~{~a~^|~}"
+                            (mapcar 'string->reg (fs-field 'one-keyword)))
+                    :case-insensitive-mode t)))))
     (cl-ppcre:scan (scanner) description)))
 
 (defun find-match (fs epg)
@@ -238,7 +249,7 @@
     (dolist (c (checks) t)
       (unless
           (case c
-            (title (check-title (getf epg :title) (getf epg :lang) fs
+            (title (check-title (getf epg :title) (epg-lang epg) fs
                                  (fs-field2 'exact-title)))
             (runtime (check-duration (getf epg :duration)
                                      (fs-field2 'runtime)))
@@ -268,6 +279,7 @@
                              epg-id channel-number imdb-id))
            (imdb (format nil "~a~a/~@[  (~a)~]~@[ ~a~]" +imdb-pre+ imdb-id
                          o-title years))
+           (regex (cdr (assoc (epg-lang epg) (cdr (assoc 'regexs fs)))))
            (desc (getf epg :description))
            (subject (format nil "[FS] ~a: ~a" date title))
            (content
@@ -275,7 +287,7 @@
              nil "~@[~%*** ~a ***~%~%~]~@{~#[~;~%~a~%~:;~7a:   ~a~%~]~}"
              (cdr (assoc 'comment fs)) "Title" title "Channel" channel-name
              "Date" date "Time" time "Rating" rating "IMDB" imdb "Timer"
-             vdradmin
+             vdradmin "Regex" regex
              (cl-ppcre:regex-replace-all "\\|" desc (string #\Newline)))))
       (format t "~a~%~a~%~%" subject content))))
 
