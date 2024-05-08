@@ -15,7 +15,7 @@
       :max-matches      4) "default values")
   (defconstant +imdb-pre+ "https://www.imdb.com/title/" "IMDB prefix.")
   (defconstant +vdr-admin-page+
-    "http://~a/vdradmin.pl?aktion=timer_new_form&epg_id=~a&vdr_id=~a&imdb=~a"
+    "~avdradmin.pl?aktion=timer_new_form&epg_id=~a&vdr_id=~a&imdb=~a"
     "page for creating a timer")
   (defconstant +unix-epoch-difference+ (encode-universal-time 0 0 0 1 1 1970 0)
     "difference between unix and common lisp"))
@@ -275,21 +275,17 @@
            (channel-name (getf epg :channel))
            (date (format nil "~2,'0d-~2,'0d-~4,'0d" d mm y))
            (time (format nil "~2,'0d:~2,'0d" h m))
-           (vdradmin (format nil +vdr-admin-page+ (cv :vdradmin-host)
+           (vdradmin (format nil +vdr-admin-page+ (cv :vdradmin-url)
                              epg-id channel-number imdb-id))
            (imdb (format nil "~a~a/~@[  (~a)~]~@[ ~a~]" +imdb-pre+ imdb-id
                          o-title years))
            (regex (cdr (assoc (epg-lang epg) (cdr (assoc 'regexs fs)))))
-           (desc (getf epg :description))
-           (subject (format nil "[FS] ~a: ~a" date title))
-           (content
-            (format
-             nil "~@[~%*** ~a ***~%~%~]~@{~#[~;~%~a~%~:;~7a:   ~a~%~]~}"
-             (cdr (assoc 'comment fs)) "Title" title "Channel" channel-name
-             "Date" date "Time" time "Rating" rating "IMDB" imdb "Timer"
-             vdradmin "Regex" regex
-             (cl-ppcre:regex-replace-all "\\|" desc (string #\Newline)))))
-      (format t "~a~%~a~%~%" subject content))))
+           (desc (getf epg :description)))
+      (format t "~%~@[~%*** ~a ***~%~%~]~@{~#[~;~%~a~%~:;~7a:   ~a~%~]~}~%"
+              (cdr (assoc 'comment fs)) "Title" title "Timer" vdradmin
+              "Date" date "Time" time "Channel" channel-name "Rating" rating
+              "IMDB" imdb "Regex" regex
+             (cl-ppcre:regex-replace-all "\\|" desc (string #\Newline))))))
 
 (defun search-films ()
   "Do the search."
