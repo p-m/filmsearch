@@ -1,4 +1,4 @@
-all: filmsearch imdb2fs
+all: filmsearch imdb2fs make-mkv
 
 %: %.lisp Makefile
 	@echo -e "(load \"$*.lisp\")\n(sb-ext:save-lisp-and-die" \

@@ -2,5 +2,6 @@ config*
 *entries*
 imdb2fs
 filmsearch
+make-mkv
 old
 *~
