@@ -2,6 +2,7 @@ config*
 *entries*
 imdb2fs
 filmsearch
+imdb-ids
 make-mkv
 old
 *~
