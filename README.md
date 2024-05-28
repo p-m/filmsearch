@@ -12,7 +12,7 @@ location, you have to run `filmsearch` with the name of that location as first
 argument. It’s useful to run the program from a cronjob: It runs
 automatically and crond sends you the output by email.
 Examples for the configuration file, the database and a crontab file are in
-the `examples` subdirectory. There you’ll find also some other useful stuff.
+the `examples` subdirectory. Useful patches are in the `patches` subdirectory.
 
 `imdb2fs` is a helper program for creating database entries from IMDB
 identifiers. Its default configuration file is `~/.config/imdb2fs.conf`, but

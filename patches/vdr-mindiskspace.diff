@@ -1,0 +1,90 @@
+diff --git a/MANUAL b/MANUAL
+index 4c4eb9a2..f6021021 100644
+--- a/MANUAL
++++ b/MANUAL
+@@ -1132,6 +1132,10 @@ VDR version 2.6.6 added '/' to this list.
+                          2 = yes
+                          The default is 0.
+ 
++  Min. disk space = 1024
++                         Controls how much free disk space in MB must be
++                         preserved in the recording directory.
++
+   Replay:
+ 
+   Multi speed mode = no  Defines the function of the "Left" and "Right" keys in
+diff --git a/config.c b/config.c
+index 23d9e1ee..5a517d42 100644
+--- a/config.c
++++ b/config.c
+@@ -470,6 +470,7 @@ cSetup::cSetup(void)
+   MaxVideoFileSize = MAXVIDEOFILESIZEDEFAULT;
+   SplitEditedFiles = 0;
+   DelTimeshiftRec = 0;
++  MinDiskSpace = 1024;
+   MinEventTimeout = 30;
+   MinUserInactivity = 300;
+   NextWakeupTime = 0;
+@@ -700,6 +701,7 @@ bool cSetup::Parse(const char *Name, const char *Value)
+   else if (!strcasecmp(Name, "MaxVideoFileSize"))    MaxVideoFileSize   = atoi(Value);
+   else if (!strcasecmp(Name, "SplitEditedFiles"))    SplitEditedFiles   = atoi(Value);
+   else if (!strcasecmp(Name, "DelTimeshiftRec"))     DelTimeshiftRec    = atoi(Value);
++  else if (!strcasecmp(Name, "MinDiskSpace"))        MinDiskSpace       = atoi(Value);
+   else if (!strcasecmp(Name, "MinEventTimeout"))     MinEventTimeout    = atoi(Value);
+   else if (!strcasecmp(Name, "MinUserInactivity"))   MinUserInactivity  = atoi(Value);
+   else if (!strcasecmp(Name, "NextWakeupTime"))      NextWakeupTime     = atoi(Value);
+@@ -834,6 +836,7 @@ bool cSetup::Save(void)
+   Store("MaxVideoFileSize",   MaxVideoFileSize);
+   Store("SplitEditedFiles",   SplitEditedFiles);
+   Store("DelTimeshiftRec",    DelTimeshiftRec);
++  Store("MinDiskSpace",       MinDiskSpace);
+   Store("MinEventTimeout",    MinEventTimeout);
+   Store("MinUserInactivity",  MinUserInactivity);
+   Store("NextWakeupTime",     NextWakeupTime);
+diff --git a/config.h b/config.h
+index 68fc5a40..755a06ea 100644
+--- a/config.h
++++ b/config.h
+@@ -342,7 +342,7 @@ public:
+   int MaxVideoFileSize;
+   int SplitEditedFiles;
+   int DelTimeshiftRec;
+-  int MinEventTimeout, MinUserInactivity;
++  int MinDiskSpace, MinEventTimeout, MinUserInactivity;
+   time_t NextWakeupTime;
+   int MultiSpeedMode;
+   int ShowReplayMode;
+diff --git a/menu.c b/menu.c
+index be490df5..07ceadd1 100644
+--- a/menu.c
++++ b/menu.c
+@@ -4185,6 +4185,7 @@ cMenuSetupRecord::cMenuSetupRecord(void)
+   Add(new cMenuEditIntItem( tr("Setup.Recording$Max. video file size (MB)"), &data.MaxVideoFileSize, MINVIDEOFILESIZE, MAXVIDEOFILESIZETS));
+   Add(new cMenuEditBoolItem(tr("Setup.Recording$Split edited files"),        &data.SplitEditedFiles));
+   Add(new cMenuEditStraItem(tr("Setup.Recording$Delete timeshift recording"),&data.DelTimeshiftRec, 3, delTimeshiftRecTexts));
++  Add(new cMenuEditIntItem( tr("Setup.Recording$Min. disk space (MB)"),      &data.MinDiskSpace));
+ }
+ 
+ // --- cMenuSetupReplay ------------------------------------------------------
+diff --git a/recording.c b/recording.c
+index 8cdcef8a..b645e187 100644
+--- a/recording.c
++++ b/recording.c
+@@ -58,8 +58,6 @@
+ #define SORTMODEFILE      ".sort"
+ #define TIMERRECFILE      ".timer"
+ 
+-#define MINDISKSPACE 1024 // MB
+-
+ #define REMOVECHECKDELTA   60 // seconds between checks for removing deleted files
+ #define DELETEDLIFETIME   300 // seconds after which a deleted recording will be actually removed
+ #define DISKCHECKDELTA    100 // seconds between checks for free disk space
+@@ -159,7 +157,7 @@ void AssertFreeDiskSpace(int Priority, bool Force)
+   static time_t LastFreeDiskCheck = 0;
+   int Factor = (Priority == -1) ? 10 : 1;
+   if (Force || time(NULL) - LastFreeDiskCheck > DISKCHECKDELTA / Factor) {
+-     if (!cVideoDirectory::VideoFileSpaceAvailable(MINDISKSPACE)) {
++     if (!cVideoDirectory::VideoFileSpaceAvailable(Setup.MinDiskSpace)) {
+         // Make sure only one instance of VDR does this:
+         cLockFile LockFile(cVideoDirectory::Name());
+         if (!LockFile.Lock())

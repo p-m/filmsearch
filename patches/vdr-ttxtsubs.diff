@@ -1,0 +1,1851 @@
+diff -uNr vdr-2.6.7/MANUAL vdr-2.6.7-patched/MANUAL
+--- vdr-2.6.7/MANUAL	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/MANUAL	2024-05-15 00:10:24.854892420 +0200
+@@ -974,6 +974,9 @@
+                          background transparency. By default the values as broadcast
+                          are used.
+ 
++  Enable teletext support = yes
++                         If set to 'yes', enables teletext subtitles.
++
+   LNB:
+ 
+   Use DiSEqC = no        Generally turns DiSEqC support on or off.
+diff -uNr vdr-2.6.7/Makefile vdr-2.6.7-patched/Makefile
+--- vdr-2.6.7/Makefile	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/Makefile	2024-05-15 00:10:24.858225642 +0200
+@@ -94,6 +94,8 @@
+        skinclassic.o skinlcars.o skins.o skinsttng.o sourceparams.o sources.o spu.o status.o svdrp.o themes.o thread.o\
+        timers.o tools.o transfer.o vdr.o videodir.o
+ 
++OBJS += vdrttxtsubshooks.o
++
+ DEFINES  += $(CDEFINES)
+ INCLUDES += $(CINCLUDES)
+ 
+diff -uNr vdr-2.6.7/channels.c vdr-2.6.7-patched/channels.c
+--- vdr-2.6.7/channels.c	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/channels.c	2024-05-15 00:10:24.858225642 +0200
+@@ -437,6 +437,27 @@
+   return Modified;
+ }
+ 
++bool cChannel::SetTeletextSubtitlePages(tTeletextSubtitlePage pages[], int numberOfPages)
++{
++  int mod = CHANNELMOD_NONE;
++//LOCK_CHANNELS_WRITE;
++  if (totalTtxtSubtitlePages != (fixedTtxtSubtitlePages + numberOfPages))
++     mod |= CHANNELMOD_PIDS;
++  totalTtxtSubtitlePages = fixedTtxtSubtitlePages;
++  for (int i = 0; (i < numberOfPages) && (totalTtxtSubtitlePages < MAXTXTPAGES); i++) {
++      if (teletextSubtitlePages[totalTtxtSubtitlePages].ttxtMagazine != pages[i].ttxtMagazine ||
++          teletextSubtitlePages[totalTtxtSubtitlePages].ttxtPage != pages[i].ttxtPage ||
++          teletextSubtitlePages[totalTtxtSubtitlePages].ttxtType != pages[i].ttxtType ||
++          strcmp(teletextSubtitlePages[totalTtxtSubtitlePages].ttxtLanguage, pages[i].ttxtLanguage)) {
++         mod |= CHANNELMOD_PIDS;
++         teletextSubtitlePages[totalTtxtSubtitlePages] = pages[i];
++         }
++      totalTtxtSubtitlePages++;
++      }
++  modification |= mod;
++  return true;
++}
++
+ void cChannel::SetSeen(void)
+ {
+   seen = time(NULL);
+@@ -591,10 +612,17 @@
+         q += IntArrayToString(q, Channel->dpids, 10, Channel->dlangs, Channel->dtypes);
+         }
+      *q = 0;
+-     const int TBufferSize = MAXSPIDS * (5 + 1 + MAXLANGCODE2) + 10; // 5 digits plus delimiting ',' or ';' plus optional '=cod+cod', +10: paranoia and tpid
++     const int TBufferSize = (MAXTXTPAGES * MAXSPIDS) * (5 + 1 + MAXLANGCODE2) + 10; // 5 digits plus delimiting ',' or ';' plus optional '=cod+cod', +10: paranoia and tpid
+      char tpidbuf[TBufferSize];
+      q = tpidbuf;
+      q += snprintf(q, sizeof(tpidbuf), "%d", Channel->tpid);
++     if (Channel->fixedTtxtSubtitlePages > 0) {
++        *q++ = '+';
++        for (int i = 0; i < Channel->fixedTtxtSubtitlePages; ++i) {
++            tTeletextSubtitlePage page = Channel->teletextSubtitlePages[i];
++            q += snprintf(q, sizeof(tpidbuf) - (q - tpidbuf), "%d=%s", page.PageNumber(), page.ttxtLanguage);
++            }
++        }
+      if (Channel->spids[0]) {
+         *q++ = ';';
+         q += IntArrayToString(q, Channel->spids, 10, Channel->slangs);
+@@ -766,6 +794,32 @@
+                     }
+               spids[NumSpids] = 0;
+               }
++           fixedTtxtSubtitlePages = 0;
++           if ((p = strchr(tpidbuf, '+')) != NULL) {
++              *p++ = 0;
++              char *q;
++              char *strtok_next;
++              while ((q = strtok_r(p, ",", &strtok_next)) != NULL) {
++                    if (fixedTtxtSubtitlePages < MAXTXTPAGES) {
++                       int page;
++                       char *l = strchr(q, '=');
++                       if (l)
++                          *l++ = 0;
++                       if (sscanf(q, "%d", &page) == 1) {
++                          teletextSubtitlePages[fixedTtxtSubtitlePages] = tTeletextSubtitlePage(page);
++                          if (l)
++                             strn0cpy(teletextSubtitlePages[fixedTtxtSubtitlePages].ttxtLanguage, l, MAXLANGCODE2);
++                          fixedTtxtSubtitlePages++;
++                          }
++                       else
++                          esyslog("ERROR: invalid Teletext page!"); // no need to set ok to 'false'
++                       }
++                    else
++                       esyslog("ERROR: too many Teletext pages!"); // no need to set ok to 'false'
++                    p = NULL;
++                    }
++              totalTtxtSubtitlePages = fixedTtxtSubtitlePages;
++              }
+            if (sscanf(tpidbuf, "%d", &tpid) != 1)
+               return false;
+            if (caidbuf) {
+diff -uNr vdr-2.6.7/channels.h vdr-2.6.7-patched/channels.h
+--- vdr-2.6.7/channels.h	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/channels.h	2024-05-15 00:10:24.858225642 +0200
+@@ -32,6 +32,7 @@
+ #define MAXDPIDS 16 // dolby (AC3 + DTS)
+ #define MAXSPIDS 32 // subtitles
+ #define MAXCAIDS 12 // conditional access
++#define MAXTXTPAGES 8 // teletext pages
+ 
+ #define MAXLANGCODE1 4 // a 3 letter language code, zero terminated
+ #define MAXLANGCODE2 8 // up to two 3 letter language codes, separated by '+' and zero terminated
+@@ -68,6 +69,16 @@
+   static const tChannelID InvalidID;
+   };
+ 
++struct tTeletextSubtitlePage {
++  tTeletextSubtitlePage(void) { ttxtPage = ttxtMagazine = 0; ttxtType = 0x02; strcpy(ttxtLanguage, "und"); }
++  tTeletextSubtitlePage(int page) { ttxtMagazine = (page / 100) & 0x7; ttxtPage = (((page % 100) / 10) << 4) + (page % 10); ttxtType = 0x02; strcpy(ttxtLanguage, "und"); }
++  char ttxtLanguage[MAXLANGCODE1];
++  uchar ttxtPage;
++  uchar ttxtMagazine;
++  uchar ttxtType;
++  int PageNumber(void) const { return BCDCHARTOINT(ttxtMagazine) * 100 + BCDCHARTOINT(ttxtPage); }
++  };
++
+ class cChannel;
+ 
+ class cLinkChannel : public cListObject {
+@@ -115,6 +126,9 @@
+   uint16_t compositionPageIds[MAXSPIDS];
+   uint16_t ancillaryPageIds[MAXSPIDS];
+   int tpid;
++  int fixedTtxtSubtitlePages;
++  int totalTtxtSubtitlePages;
++  tTeletextSubtitlePage teletextSubtitlePages[MAXTXTPAGES];
+   int caids[MAXCAIDS + 1]; // list is zero-terminated
+   int nid;
+   int tid;
+@@ -169,6 +183,8 @@
+   uint16_t CompositionPageId(int i) const { return (0 <= i && i < MAXSPIDS) ? compositionPageIds[i] : uint16_t(0); }
+   uint16_t AncillaryPageId(int i) const { return (0 <= i && i < MAXSPIDS) ? ancillaryPageIds[i] : uint16_t(0); }
+   int Tpid(void) const { return tpid; }
++  const tTeletextSubtitlePage *TeletextSubtitlePages() const { return teletextSubtitlePages; }
++  int TotalTeletextSubtitlePages() const { return totalTtxtSubtitlePages; }
+   const int *Caids(void) const { return caids; }
+   int Ca(int Index = 0) const { return Index < MAXCAIDS ? caids[Index] : 0; }
+   int Nid(void) const { return nid; }
+@@ -199,6 +215,7 @@
+   bool SetName(const char *Name, const char *ShortName, const char *Provider);
+   bool SetPortalName(const char *PortalName);
+   bool SetPids(int Vpid, int Ppid, int Vtype, int *Apids, int *Atypes, char ALangs[][MAXLANGCODE2], int *Dpids, int *Dtypes, char DLangs[][MAXLANGCODE2], int *Spids, char SLangs[][MAXLANGCODE2], int Tpid);
++  bool SetTeletextSubtitlePages(tTeletextSubtitlePage pages[], int numberOfPages);
+   bool SetCaIds(const int *CaIds); // list must be zero-terminated
+   bool SetCaDescriptors(int Level);
+   bool SetLinkChannels(cLinkChannels *LinkChannels);
+diff -uNr vdr-2.6.7/ci.c vdr-2.6.7-patched/ci.c
+--- vdr-2.6.7/ci.c	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/ci.c	2024-05-15 00:10:24.861558864 +0200
+@@ -2732,6 +2732,8 @@
+          AddPid(Channel->Sid(), *Dpid, STREAM_TYPE_PRIVATE);
+      for (const int *Spid = Channel->Spids(); *Spid; Spid++)
+          AddPid(Channel->Sid(), *Spid, STREAM_TYPE_PRIVATE);
++     if (Channel->Tpid() && Setup.SupportTeletext)
++        AddPid(Channel->Sid(), Channel->Tpid(), STREAM_TYPE_PRIVATE);
+      }
+ }
+ 
+@@ -2755,6 +2757,9 @@
+          CaPmt.AddPid(*Dpid, STREAM_TYPE_PRIVATE);
+      for (const int *Spid = Channel->Spids(); *Spid; Spid++)
+          CaPmt.AddPid(*Spid, STREAM_TYPE_PRIVATE);
++     if (Channel->Tpid() && Setup.SupportTeletext) {
++        CaPmt.AddPid(Channel->Tpid(), STREAM_TYPE_PRIVATE);
++        }
+      if (MtdMapper)
+         CaPmt.MtdMapPids(MtdMapper);
+      cas->SendPMT(&CaPmt);
+diff -uNr vdr-2.6.7/config.c vdr-2.6.7-patched/config.c
+--- vdr-2.6.7/config.c	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/config.c	2024-05-15 00:10:24.861558864 +0200
+@@ -403,6 +403,7 @@
+   MarginStop = 10;
+   AudioLanguages[0] = -1;
+   DisplaySubtitles = 0;
++  SupportTeletext = 1;
+   SubtitleLanguages[0] = -1;
+   SubtitleOffset = 0;
+   SubtitleFgTransparency = 0;
+@@ -633,6 +634,7 @@
+   else if (!strcasecmp(Name, "MarginStop"))          MarginStop         = atoi(Value);
+   else if (!strcasecmp(Name, "AudioLanguages"))      return ParseLanguages(Value, AudioLanguages);
+   else if (!strcasecmp(Name, "DisplaySubtitles"))    DisplaySubtitles   = atoi(Value);
++  else if (!strcasecmp(Name, "SupportTeletext"))     SupportTeletext    = atoi(Value);
+   else if (!strcasecmp(Name, "SubtitleLanguages"))   return ParseLanguages(Value, SubtitleLanguages);
+   else if (!strcasecmp(Name, "SubtitleOffset"))      SubtitleOffset     = atoi(Value);
+   else if (!strcasecmp(Name, "SubtitleFgTransparency")) SubtitleFgTransparency = atoi(Value);
+@@ -767,6 +769,7 @@
+   Store("MarginStop",         MarginStop);
+   StoreLanguages("AudioLanguages", AudioLanguages);
+   Store("DisplaySubtitles",   DisplaySubtitles);
++  Store("SupportTeletext",    SupportTeletext);
+   StoreLanguages("SubtitleLanguages", SubtitleLanguages);
+   Store("SubtitleOffset",     SubtitleOffset);
+   Store("SubtitleFgTransparency", SubtitleFgTransparency);
+diff -uNr vdr-2.6.7/config.h vdr-2.6.7-patched/config.h
+--- vdr-2.6.7/config.h	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/config.h	2024-05-15 00:10:24.864892086 +0200
+@@ -287,6 +287,7 @@
+   int MarginStart, MarginStop;
+   int AudioLanguages[I18N_MAX_LANGUAGES + 1];
+   int DisplaySubtitles;
++  int SupportTeletext;
+   int SubtitleLanguages[I18N_MAX_LANGUAGES + 1];
+   int SubtitleOffset;
+   int SubtitleFgTransparency, SubtitleBgTransparency;
+diff -uNr vdr-2.6.7/device.c vdr-2.6.7-patched/device.c
+--- vdr-2.6.7/device.c	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/device.c	2024-05-15 00:10:24.864892086 +0200
+@@ -19,6 +19,7 @@
+ #include "receiver.h"
+ #include "status.h"
+ #include "transfer.h"
++#include "vdrttxtsubshooks.h"
+ 
+ // --- cLiveSubtitle ---------------------------------------------------------
+ 
+@@ -1465,6 +1466,13 @@
+                   }
+                break;
+           case 0xBD: { // private stream 1
++               // EBU Teletext data, ETSI EN 300 472
++               // if PES data header length = 24 and data_identifier = 0x10..0x1F (EBU Data)
++               if (Data[8] == 0x24 && Data[45] >= 0x10 && Data[45] < 0x20) {
++                  cVDRTtxtsubsHookListener::Hook()->PlayerTeletextData((uint8_t*)Data, Length);
++                  break;
++                  }
++
+                int PayloadOffset = Data[8] + 9;
+ 
+                // Compatibility mode for old subtitles plugin:
+@@ -1623,6 +1631,7 @@
+      tsToPesVideo.Reset();
+      tsToPesAudio.Reset();
+      tsToPesSubtitle.Reset();
++     tsToPesTeletext.Reset();
+      }
+   else if (Length < TS_SIZE) {
+      esyslog("ERROR: skipped %d bytes of TS fragment", Length);
+@@ -1662,6 +1671,17 @@
+                     if (!VideoOnly || HasIBPTrickSpeed())
+                        PlayTsSubtitle(Data, TS_SIZE);
+                     }
++                 else if (Pid == patPmtParser.Tpid()) {
++                    if (!VideoOnly || HasIBPTrickSpeed()) {
++                       int l;
++                       tsToPesTeletext.PutTs(Data, Length);
++                       if (const uchar *p = tsToPesTeletext.GetPes(l)) {
++                          if ((l > 45) && (p[0] == 0x00) && (p[1] == 0x00) && (p[2] == 0x01) && (p[3] == 0xbd) && (p[8] == 0x24) && (p[45] >= 0x10) && (p[45] < 0x20))
++                             cVDRTtxtsubsHookListener::Hook()->PlayerTeletextData((uchar *)p, l, false, patPmtParser.TeletextSubtitlePages(), patPmtParser.TotalTeletextSubtitlePages());
++                          tsToPesTeletext.Reset();
++                          }
++                       }
++                    }
+                  }
+               }
+            else if (Pid == patPmtParser.Ppid()) {
+diff -uNr vdr-2.6.7/device.h vdr-2.6.7-patched/device.h
+--- vdr-2.6.7/device.h	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/device.h	2024-05-15 00:10:24.864892086 +0200
+@@ -651,6 +651,7 @@
+   cTsToPes tsToPesVideo;
+   cTsToPes tsToPesAudio;
+   cTsToPes tsToPesSubtitle;
++  cTsToPes tsToPesTeletext;
+   bool isPlayingVideo;
+ protected:
+   const cPatPmtParser *PatPmtParser(void) const { return &patPmtParser; }
+diff -uNr vdr-2.6.7/menu.c vdr-2.6.7-patched/menu.c
+--- vdr-2.6.7/menu.c	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/menu.c	2024-05-15 00:10:24.868225308 +0200
+@@ -3786,6 +3786,7 @@
+      Add(new cMenuEditIntItem( tr("Setup.DVB$Subtitle foreground transparency"), &data.SubtitleFgTransparency, 0, 9));
+      Add(new cMenuEditIntItem( tr("Setup.DVB$Subtitle background transparency"), &data.SubtitleBgTransparency, 0, 10));
+      }
++  Add(new cMenuEditBoolItem(tr("Setup.DVB$Enable teletext support"), &data.SupportTeletext));
+ 
+   SetCurrent(Get(current));
+   Display();
+diff -uNr vdr-2.6.7/pat.c vdr-2.6.7-patched/pat.c
+--- vdr-2.6.7/pat.c	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/pat.c	2024-05-15 00:10:24.868225308 +0200
+@@ -12,6 +12,7 @@
+ #include "channels.h"
+ #include "libsi/section.h"
+ #include "libsi/descriptor.h"
++#include "vdrttxtsubshooks.h"
+ 
+ #define PMT_SCAN_TIMEOUT  1000 // ms
+ 
+@@ -632,6 +633,8 @@
+         char DLangs[MAXDPIDS][MAXLANGCODE2] = { "" };
+         char SLangs[MAXSPIDS][MAXLANGCODE2] = { "" };
+         int Tpid = 0;
++        tTeletextSubtitlePage TeletextSubtitlePages[MAXTXTPAGES];
++        int NumTPages = 0;
+         int NumApids = 0;
+         int NumDpids = 0;
+         int NumSpids = 0;
+@@ -724,8 +727,21 @@
+                                     NumSpids++;
+                                     }
+                                  break;
+-                            case SI::TeletextDescriptorTag:
++                            case SI::TeletextDescriptorTag: {
+                                  Tpid = esPid;
++                                 SI::TeletextDescriptor *sd = (SI::TeletextDescriptor *)d;
++                                 SI::TeletextDescriptor::Teletext ttxt;
++                                 for (SI::Loop::Iterator it; sd->teletextLoop.getNext(ttxt, it); ) {
++                                     bool isSubtitlePage = (ttxt.getTeletextType() == 0x02) || (ttxt.getTeletextType() == 0x05);
++                                     if ((NumTPages < MAXTXTPAGES) && ttxt.languageCode[0] && isSubtitlePage) {
++                                        strn0cpy(TeletextSubtitlePages[NumTPages].ttxtLanguage, I18nNormalizeLanguageCode(ttxt.languageCode), MAXLANGCODE1);
++                                        TeletextSubtitlePages[NumTPages].ttxtPage = ttxt.getTeletextPageNumber();
++                                        TeletextSubtitlePages[NumTPages].ttxtMagazine = ttxt.getTeletextMagazineNumber();
++                                        TeletextSubtitlePages[NumTPages].ttxtType = ttxt.getTeletextType();
++                                        NumTPages++;
++                                        }
++                                     }
++                                 }
+                                  break;
+                             case SI::ISO639LanguageDescriptorTag: {
+                                  SI::ISO639LanguageDescriptor *ld = (SI::ISO639LanguageDescriptor *)d;
+@@ -839,6 +855,12 @@
+             }
+         if (Setup.UpdateChannels >= 2) {
+            ChannelsModified |= Channel->SetPids(Vpid, Ppid, Vtype, Apids, Atypes, ALangs, Dpids, Dtypes, DLangs, Spids, SLangs, Tpid);
++           if (NumTPages < MAXTXTPAGES) {
++              int manualPageNumber = cVDRTtxtsubsHookListener::Hook()->ManualPageNumber(Channel);
++              if (manualPageNumber)
++                 TeletextSubtitlePages[NumTPages++] = tTeletextSubtitlePage(manualPageNumber);
++              }
++           ChannelsModified |= Channel->SetTeletextSubtitlePages(TeletextSubtitlePages, NumTPages);
+            ChannelsModified |= Channel->SetCaIds(CaDescriptors->CaIds());
+            ChannelsModified |= Channel->SetSubtitlingDescriptors(SubtitlingTypes, CompositionPageIds, AncillaryPageIds);
+            }
+diff -uNr vdr-2.6.7/po/ar.po vdr-2.6.7-patched/po/ar.po
+--- vdr-2.6.7/po/ar.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/ar.po	2024-05-15 00:10:24.868225308 +0200
+@@ -1132,6 +1132,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Ø´ÙØ§ÙÙŠØ© Ø§Ù„Ø®Ù„ÙÙŠØ©"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "Ø§Ù„Ø§Ù‚Ø·"
+ 
+diff -uNr vdr-2.6.7/po/ca_ES.po vdr-2.6.7-patched/po/ca_ES.po
+--- vdr-2.6.7/po/ca_ES.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/ca_ES.po	2024-05-15 00:10:24.871558530 +0200
+@@ -1131,6 +1131,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Transparència fons subtítols"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "Configuració de l'LNB"
+ 
+diff -uNr vdr-2.6.7/po/cs_CZ.po vdr-2.6.7-patched/po/cs_CZ.po
+--- vdr-2.6.7/po/cs_CZ.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/cs_CZ.po	2024-05-15 00:10:24.871558530 +0200
+@@ -1131,6 +1131,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "PrÅ¯hlednost pozadÃ­ titulkÅ¯"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/da_DK.po vdr-2.6.7-patched/po/da_DK.po
+--- vdr-2.6.7/po/da_DK.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/da_DK.po	2024-05-15 00:10:24.871558530 +0200
+@@ -1128,6 +1128,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Undertekst baggrundsgennemsigtighed"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/de_DE.po vdr-2.6.7-patched/po/de_DE.po
+--- vdr-2.6.7/po/de_DE.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/de_DE.po	2024-05-15 00:10:24.871558530 +0200
+@@ -19,13 +19,13 @@
+ "Content-Transfer-Encoding: 8bit\n"
+ 
+ msgid "*** Invalid Channel ***"
+-msgstr "*** Ungültiger Kanal ***"
++msgstr "*** UngÃ¼ltiger Kanal ***"
+ 
+ msgid "CAM activated!"
+ msgstr "CAM aktiviert!"
+ 
+ msgid "Channel not available!"
+-msgstr "Kanal nicht verfügbar!"
++msgstr "Kanal nicht verfÃ¼gbar!"
+ 
+ msgid "Can't start Transfer Mode!"
+ msgstr "Transfer-Mode kann nicht gestartet werden!"
+@@ -106,7 +106,7 @@
+ msgstr "Science-Fiction/Fantasy/Horror"
+ 
+ msgid "Content$Comedy"
+-msgstr "Komödie"
++msgstr "KomÃ¶die"
+ 
+ msgid "Content$Soap/Melodrama/Folkloric"
+ msgstr "Seife/Melodram/Folklore"
+@@ -157,7 +157,7 @@
+ msgstr "Sportmagazin"
+ 
+ msgid "Content$Football/Soccer"
+-msgstr "Football/Fußball"
++msgstr "Football/FuÃŸball"
+ 
+ msgid "Content$Tennis/Squash"
+ msgstr "Tennis/Squash"
+@@ -187,13 +187,13 @@
+ msgstr "Kinder/Jugendprogramm"
+ 
+ msgid "Content$Pre-school Children's Programme"
+-msgstr "Programm für Vorschulkinder"
++msgstr "Programm fÃ¼r Vorschulkinder"
+ 
+ msgid "Content$Entertainment Programme for 6 to 14"
+-msgstr "Unterhaltungsprogramm für 6 bis 14"
++msgstr "Unterhaltungsprogramm fÃ¼r 6 bis 14"
+ 
+ msgid "Content$Entertainment Programme for 10 to 16"
+-msgstr "Unterhaltungsprogramm für 10 bis 16"
++msgstr "Unterhaltungsprogramm fÃ¼r 10 bis 16"
+ 
+ msgid "Content$Informational/Educational/School Programme"
+ msgstr "Informations/Lehr/Schul-Programm"
+@@ -226,16 +226,16 @@
+ msgstr "Kunst/Kultur"
+ 
+ msgid "Content$Performing Arts"
+-msgstr "Darstellende Künste"
++msgstr "Darstellende KÃ¼nste"
+ 
+ msgid "Content$Fine Arts"
+-msgstr "Bildende Künste"
++msgstr "Bildende KÃ¼nste"
+ 
+ msgid "Content$Religion"
+ msgstr "Religion"
+ 
+ msgid "Content$Popular Culture/Traditional Arts"
+-msgstr "Pop-Kultur/Traditionelle Künste"
++msgstr "Pop-Kultur/Traditionelle KÃ¼nste"
+ 
+ msgid "Content$Literature"
+ msgstr "Literatur"
+@@ -322,10 +322,10 @@
+ msgstr "Originalsprache"
+ 
+ msgid "Content$Black & White"
+-msgstr "Schwarz-weiß"
++msgstr "Schwarz-weiÃŸ"
+ 
+ msgid "Content$Unpublished"
+-msgstr "Unveröffentlicht"
++msgstr "UnverÃ¶ffentlicht"
+ 
+ msgid "Content$Live Broadcast"
+ msgstr "Live-Sendung"
+@@ -373,35 +373,35 @@
+ msgstr "Phase 1: System der Fernbedienung ermitteln"
+ 
+ msgid "Press any key on the RC unit"
+-msgstr "Eine Taste auf der Fernbedienung drücken"
++msgstr "Eine Taste auf der Fernbedienung drÃ¼cken"
+ 
+ msgid "RC code detected!"
+ msgstr "System der Fernbedienung erkannt!"
+ 
+ msgid "Do not press any key..."
+-msgstr "Keine Taste drücken..."
++msgstr "Keine Taste drÃ¼cken..."
+ 
+ msgid "Phase 2: Learning specific key codes"
+ msgstr "Phase 2: Tastenbelegung anlernen"
+ 
+ #, c-format
+ msgid "Press key for '%s'"
+-msgstr "Taste für '%s' drücken"
++msgstr "Taste fÃ¼r '%s' drÃ¼cken"
+ 
+ msgid "Press 'Up' to confirm"
+-msgstr "'Auf' drücken zum Bestätigen"
++msgstr "'Auf' drÃ¼cken zum BestÃ¤tigen"
+ 
+ msgid "Press 'Down' to continue"
+-msgstr "'Ab' drücken zum Weitermachen"
++msgstr "'Ab' drÃ¼cken zum Weitermachen"
+ 
+ msgid "(press 'Up' to go back)"
+-msgstr "('Auf' drücken, um zurückzugehen)"
++msgstr "('Auf' drÃ¼cken, um zurÃ¼ckzugehen)"
+ 
+ msgid "(press 'Down' to end key definition)"
+-msgstr "('Ab' drücken zum Beenden)"
++msgstr "('Ab' drÃ¼cken zum Beenden)"
+ 
+ msgid "(press 'Menu' to skip this key)"
+-msgstr "('Menü' drücken zum Überspringen)"
++msgstr "('MenÃ¼' drÃ¼cken zum Ãœberspringen)"
+ 
+ msgid "Learning Remote Control Keys"
+ msgstr "Fernbedienung anlernen"
+@@ -419,13 +419,13 @@
+ msgstr "Ab"
+ 
+ msgid "Key$Menu"
+-msgstr "Menü"
++msgstr "MenÃ¼"
+ 
+ msgid "Key$Ok"
+ msgstr "Ok"
+ 
+ msgid "Key$Back"
+-msgstr "Zurück"
++msgstr "ZurÃ¼ck"
+ 
+ msgid "Key$Left"
+ msgstr "Links"
+@@ -437,7 +437,7 @@
+ msgstr "Rot"
+ 
+ msgid "Key$Green"
+-msgstr "Grün"
++msgstr "GrÃ¼n"
+ 
+ msgid "Key$Yellow"
+ msgstr "Gelb"
+@@ -467,13 +467,13 @@
+ msgstr "Vorlauf"
+ 
+ msgid "Key$FastRew"
+-msgstr "Rücklauf"
++msgstr "RÃ¼cklauf"
+ 
+ msgid "Key$Next"
+-msgstr "Vorwärts"
++msgstr "VorwÃ¤rts"
+ 
+ msgid "Key$Prev"
+-msgstr "Zurück"
++msgstr "ZurÃ¼ck"
+ 
+ msgid "Key$Power"
+ msgstr "Ausschalten"
+@@ -488,10 +488,10 @@
+ msgstr "Vorheriger Kanal"
+ 
+ msgid "Key$Volume+"
+-msgstr "Lautstärke+"
++msgstr "LautstÃ¤rke+"
+ 
+ msgid "Key$Volume-"
+-msgstr "Lautstärke-"
++msgstr "LautstÃ¤rke-"
+ 
+ msgid "Key$Mute"
+ msgstr "Stumm"
+@@ -506,7 +506,7 @@
+ msgstr "Programm"
+ 
+ msgid "Key$Channels"
+-msgstr "Kanäle"
++msgstr "KanÃ¤le"
+ 
+ msgid "Key$Timers"
+ msgstr "Timer"
+@@ -554,7 +554,7 @@
+ msgstr "frei empfangbar"
+ 
+ msgid "encrypted"
+-msgstr "verschlüsselt"
++msgstr "verschlÃ¼sselt"
+ 
+ msgid "Edit channel"
+ msgstr "Kanal editieren"
+@@ -611,7 +611,7 @@
+ msgstr "Kanaleinstellungen sind nicht eindeutig!"
+ 
+ msgid "Channels"
+-msgstr "Kanäle"
++msgstr "KanÃ¤le"
+ 
+ msgid "Button$Edit"
+ msgstr "Editieren"
+@@ -620,7 +620,7 @@
+ msgstr "Neu"
+ 
+ msgid "Button$Delete"
+-msgstr "Löschen"
++msgstr "LÃ¶schen"
+ 
+ msgid "Button$Mark"
+ msgstr "Markieren"
+@@ -629,7 +629,7 @@
+ msgstr "Kanal wird von einem Timer benutzt!"
+ 
+ msgid "Delete channel?"
+-msgstr "Kanal löschen?"
++msgstr "Kanal lÃ¶schen?"
+ 
+ msgid "Edit folder"
+ msgstr "Verzeichnis editieren"
+@@ -645,13 +645,13 @@
+ msgstr "Verzeichnisname darf kein '%c' enthalten!"
+ 
+ msgid "Button$Open"
+-msgstr "Öffnen"
++msgstr "Ã–ffnen"
+ 
+ msgid "Delete folder and all sub folders?"
+-msgstr "Verzeichnis und alle Unterverzeichnisse löschen?"
++msgstr "Verzeichnis und alle Unterverzeichnisse lÃ¶schen?"
+ 
+ msgid "Delete folder?"
+-msgstr "Verzeichnis löschen?"
++msgstr "Verzeichnis lÃ¶schen?"
+ 
+ msgid "Edit timer"
+ msgstr "Timer editieren"
+@@ -675,7 +675,7 @@
+ msgstr "VPS"
+ 
+ msgid "Priority"
+-msgstr "Priorität"
++msgstr "PrioritÃ¤t"
+ 
+ msgid "Lifetime"
+ msgstr "Lebensdauer"
+@@ -714,10 +714,10 @@
+ msgstr "Fehler beim Ansprechen des fernen Timers"
+ 
+ msgid "Timer has been deleted!"
+-msgstr "Timer wurde gelöscht!"
++msgstr "Timer wurde gelÃ¶scht!"
+ 
+ msgid "Select folder"
+-msgstr "Verzeichnis wählen"
++msgstr "Verzeichnis wÃ¤hlen"
+ 
+ msgid "Timers"
+ msgstr "Timer"
+@@ -729,10 +729,10 @@
+ msgstr "Info"
+ 
+ msgid "Delete timer?"
+-msgstr "Timer löschen?"
++msgstr "Timer lÃ¶schen?"
+ 
+ msgid "Timer still recording - really delete?"
+-msgstr "Timer zeichnet auf - trotzdem löschen?"
++msgstr "Timer zeichnet auf - trotzdem lÃ¶schen?"
+ 
+ msgid "Event"
+ msgstr "Sendung"
+@@ -747,13 +747,13 @@
+ msgstr "Umschalten"
+ 
+ msgid "What's on now?"
+-msgstr "Was läuft jetzt?"
++msgstr "Was lÃ¤uft jetzt?"
+ 
+ msgid "What's on next?"
+-msgstr "Was läuft als nächstes?"
++msgstr "Was lÃ¤uft als nÃ¤chstes?"
+ 
+ msgid "Button$Next"
+-msgstr "Nächste"
++msgstr "NÃ¤chste"
+ 
+ msgid "Button$Now"
+ msgstr "Jetzt"
+@@ -776,10 +776,10 @@
+ msgstr "Diese Sendung - %s"
+ 
+ msgid "This event - all channels"
+-msgstr "Diese Sendung - alle Kanäle"
++msgstr "Diese Sendung - alle KanÃ¤le"
+ 
+ msgid "All events - all channels"
+-msgstr "Alle Sendungen - alle Kanäle"
++msgstr "Alle Sendungen - alle KanÃ¤le"
+ 
+ #, c-format
+ msgid "Please enter %d digits!"
+@@ -798,7 +798,7 @@
+ msgstr "Größe"
+ 
+ msgid "This folder is currently in use - no changes are possible!"
+-msgstr "Dieser Ordner ist zur Zeit in Verwendung - es sind keine Änderungen möglich!"
++msgstr "Dieser Ordner ist zur Zeit in Verwendung - es sind keine Ã„nderungen mÃ¶glich!"
+ 
+ #, c-format
+ msgid "Move entire folder containing %d recordings?"
+@@ -811,7 +811,7 @@
+ msgstr "Aufnahme editieren"
+ 
+ msgid "This recording is currently in use - no changes are possible!"
+-msgstr "Diese Aufnahme ist zur Zeit in Verwendung - es sind keine Änderungen möglich!"
++msgstr "Diese Aufnahme ist zur Zeit in Verwendung - es sind keine Ã„nderungen mÃ¶glich!"
+ 
+ msgid "Button$Cancel cutting"
+ msgstr "Schnitt abbrechen"
+@@ -835,31 +835,31 @@
+ msgstr "Schneiden"
+ 
+ msgid "Button$Delete marks"
+-msgstr "Marken löschen"
++msgstr "Marken lÃ¶schen"
+ 
+ msgid "Recording vanished!"
+ msgstr "Aufnahme verschwunden!"
+ 
+ msgid "Edited version already exists - overwrite?"
+-msgstr "Geschnittene Version existiert bereits - überschreiben?"
++msgstr "Geschnittene Version existiert bereits - Ã¼berschreiben?"
+ 
+ msgid "Error while queueing recording for cutting!"
+-msgstr "Fehler beim Hinzufügen der Aufnahme zur Schnittwarteschlange"
++msgstr "Fehler beim HinzufÃ¼gen der Aufnahme zur Schnittwarteschlange"
+ 
+ msgid "Rename recording to folder name?"
+ msgstr "Aufnahme in Ordnername umbenennen?"
+ 
+ msgid "Delete editing marks for this recording?"
+-msgstr "Schnittmarken für diese Aufnahme löschen?"
++msgstr "Schnittmarken fÃ¼r diese Aufnahme lÃ¶schen?"
+ 
+ msgid "Error while deleting editing marks!"
+-msgstr "Fehler beim Löschen der Schnittmarken!"
++msgstr "Fehler beim LÃ¶schen der Schnittmarken!"
+ 
+ msgid "Error while changing priority/lifetime!"
+-msgstr "Fehler beim Ändern der Priorität bzw. Lebensdauer!"
++msgstr "Fehler beim Ã„ndern der PrioritÃ¤t bzw. Lebensdauer!"
+ 
+ msgid "Error while changing folder/name!"
+-msgstr "Fehler beim Ändern des Ordners bzw. Namens!"
++msgstr "Fehler beim Ã„ndern des Ordners bzw. Namens!"
+ 
+ msgid "Recording info"
+ msgstr "Aufzeichnung"
+@@ -877,22 +877,22 @@
+ msgstr "Befehle"
+ 
+ msgid "Delete recording?"
+-msgstr "Aufzeichnung löschen?"
++msgstr "Aufzeichnung lÃ¶schen?"
+ 
+ msgid "Recording is being edited - really delete?"
+-msgstr "Aufzeichnung wird bearbeitet - trotzdem löschen?"
++msgstr "Aufzeichnung wird bearbeitet - trotzdem lÃ¶schen?"
+ 
+ msgid "Error while deleting recording!"
+-msgstr "Fehler beim Löschen der Aufzeichnung!"
++msgstr "Fehler beim LÃ¶schen der Aufzeichnung!"
+ 
+ msgid "Recording commands"
+-msgstr "Befehle für Aufzeichnungen"
++msgstr "Befehle fÃ¼r Aufzeichnungen"
+ 
+ msgid "never"
+ msgstr "nie"
+ 
+ msgid "skin dependent"
+-msgstr "je nach Oberfläche"
++msgstr "je nach OberflÃ¤che"
+ 
+ msgid "always"
+ msgstr "immer"
+@@ -916,7 +916,7 @@
+ msgstr "Sprache"
+ 
+ msgid "Setup.OSD$Skin"
+-msgstr "Oberfläche"
++msgstr "OberflÃ¤che"
+ 
+ msgid "Setup.OSD$Theme"
+ msgstr "Thema"
+@@ -931,16 +931,16 @@
+ msgstr "Breite (%)"
+ 
+ msgid "Setup.OSD$Height (%)"
+-msgstr "Höhe (%)"
++msgstr "HÃ¶he (%)"
+ 
+ msgid "Setup.OSD$Message time (s)"
+-msgstr "Anzeigedauer für Nachrichten (s)"
++msgstr "Anzeigedauer fÃ¼r Nachrichten (s)"
+ 
+ msgid "Setup.OSD$Use small font"
+ msgstr "Kleine Schrift benutzen"
+ 
+ msgid "Setup.OSD$Anti-alias"
+-msgstr "Kantenglättung"
++msgstr "KantenglÃ¤ttung"
+ 
+ msgid "Setup.OSD$Default font"
+ msgstr "Standard-Schriftart"
+@@ -952,13 +952,13 @@
+ msgstr "Festbreiten-Schriftart"
+ 
+ msgid "Setup.OSD$Default font size (%)"
+-msgstr "Standard-Schriftgröße (%)"
++msgstr "Standard-SchriftgrÃ¶ÃŸe (%)"
+ 
+ msgid "Setup.OSD$Small font size (%)"
+-msgstr "Kleine Schriftgröße (%)"
++msgstr "Kleine SchriftgrÃ¶ÃŸe (%)"
+ 
+ msgid "Setup.OSD$Fixed font size (%)"
+-msgstr "Festbreiten-Schriftgröße (%)"
++msgstr "Festbreiten-SchriftgrÃ¶ÃŸe (%)"
+ 
+ msgid "Setup.OSD$Channel info position"
+ msgstr "Kanalinfo-Position"
+@@ -970,13 +970,13 @@
+ msgstr "oben"
+ 
+ msgid "Setup.OSD$Channel info time (s)"
+-msgstr "Anzeigedauer für Kanalinfo (s)"
++msgstr "Anzeigedauer fÃ¼r Kanalinfo (s)"
+ 
+ msgid "Setup.OSD$Info on channel switch"
+ msgstr "Info beim Kanalwechsel"
+ 
+ msgid "Setup.OSD$Timeout requested channel info"
+-msgstr "Angeforderte Kanalinfo schließen"
++msgstr "Angeforderte Kanalinfo schlieÃŸen"
+ 
+ msgid "Setup.OSD$Scroll pages"
+ msgstr "Seitenweise scrollen"
+@@ -985,25 +985,25 @@
+ msgstr "Rundum scrollen"
+ 
+ msgid "Setup.OSD$Menu key closes"
+-msgstr "Menu-Taste schließt"
++msgstr "Menu-Taste schlieÃŸt"
+ 
+ msgid "Setup.OSD$Recording directories"
+ msgstr "Aufnahmeverzeichnisse"
+ 
+ msgid "Setup.OSD$Folders in timer menu"
+-msgstr "Verzeichnisse im Timer-Menü"
++msgstr "Verzeichnisse im Timer-MenÃ¼"
+ 
+ msgid "Setup.OSD$Always sort folders first"
+ msgstr "Verzeichnisse immer zuerst einsortieren"
+ 
+ msgid "Setup.OSD$Default sort mode for recordings"
+-msgstr "Standard Sortierreihenfolge für Aufnahmen"
++msgstr "Standard Sortierreihenfolge fÃ¼r Aufnahmen"
+ 
+ msgid "Setup.OSD$Sorting direction for recordings"
+-msgstr "Sortierreihenfolge für Aufnahmen"
++msgstr "Sortierreihenfolge fÃ¼r Aufnahmen"
+ 
+ msgid "Setup.OSD$Number keys for characters"
+-msgstr "Nummerntasten für Zeichen"
++msgstr "Nummerntasten fÃ¼r Zeichen"
+ 
+ msgid "Setup.OSD$Color key 0"
+ msgstr "Farbtaste 0"
+@@ -1042,7 +1042,7 @@
+ msgstr "Systemzeit stellen"
+ 
+ msgid "Setup.EPG$Use time from transponder"
+-msgstr "Transponder für Systemzeit"
++msgstr "Transponder fÃ¼r Systemzeit"
+ 
+ #. TRANSLATORS: note the plural!
+ msgid "Setup.EPG$Preferred languages"
+@@ -1074,10 +1074,10 @@
+ msgstr "Namen und PIDs"
+ 
+ msgid "add new channels"
+-msgstr "neue Kanäle hinzufügen"
++msgstr "neue KanÃ¤le hinzufÃ¼gen"
+ 
+ msgid "add new transponders"
+-msgstr "neue Transponder hinzufügen"
++msgstr "neue Transponder hinzufÃ¼gen"
+ 
+ msgid "DVB"
+ msgstr "DVB"
+@@ -1089,10 +1089,10 @@
+ msgstr "Untertitel"
+ 
+ msgid "Setup.DVB$Primary DVB interface"
+-msgstr "Primäres DVB-Interface"
++msgstr "PrimÃ¤res DVB-Interface"
+ 
+ msgid "Setup.DVB$Standard compliance"
+-msgstr "Standardkonformität"
++msgstr "StandardkonformitÃ¤t"
+ 
+ msgid "Setup.DVB$Video format"
+ msgstr "Videoformat"
+@@ -1104,7 +1104,7 @@
+ msgstr "Dolby-Digital-Ton benutzen"
+ 
+ msgid "Setup.DVB$Update channels"
+-msgstr "Kanäle aktualisieren"
++msgstr "KanÃ¤le aktualisieren"
+ 
+ msgid "Setup.DVB$Audio languages"
+ msgstr "Audio-Sprachen"
+@@ -1130,6 +1130,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Untertitel-Transparenz Hintergrund"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr "Videotext-Unterstützung aktivieren"
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+@@ -1159,13 +1162,13 @@
+ msgstr "Standort Breitengrad"
+ 
+ msgid "South"
+-msgstr "Süd"
++msgstr "SÃ¼d"
+ 
+ msgid "North"
+ msgstr "Nord"
+ 
+ msgid "Setup.LNB$Site longitude (degrees)"
+-msgstr "Standort Längengrad"
++msgstr "Standort LÃ¤ngengrad"
+ 
+ msgid "West"
+ msgstr "West"
+@@ -1180,7 +1183,7 @@
+ msgstr "Max. Positionier-Geschwindigkeit (Grad/s)"
+ 
+ msgid "CAM reset"
+-msgstr "CAM zurückgesetzt"
++msgstr "CAM zurÃ¼ckgesetzt"
+ 
+ msgid "CAM present"
+ msgstr "CAM vorhanden"
+@@ -1193,7 +1196,7 @@
+ msgstr " (wird aktiviert)"
+ 
+ msgid "@ device"
+-msgstr "@ Empfänger"
++msgstr "@ EmpfÃ¤nger"
+ 
+ msgid "CAM"
+ msgstr "CAM"
+@@ -1205,31 +1208,31 @@
+ msgstr "Aktivieren"
+ 
+ msgid "Button$Menu"
+-msgstr "Menü"
++msgstr "MenÃ¼"
+ 
+ msgid "Button$Reset"
+-msgstr "Rücksetzen"
++msgstr "RÃ¼cksetzen"
+ 
+ msgid "Opening CAM menu..."
+-msgstr "CAM-Menü wird geöffnet..."
++msgstr "CAM-MenÃ¼ wird geÃ¶ffnet..."
+ 
+ msgid "Can't open CAM menu!"
+-msgstr "CAM-Menü kann nicht geöffnet werden!"
++msgstr "CAM-MenÃ¼ kann nicht geÃ¶ffnet werden!"
+ 
+ msgid "Can't activate CAM!"
+ msgstr "CAM kann nicht aktiviert werden!"
+ 
+ msgid "CAM is in use - really reset?"
+-msgstr "CAM wird benutzt - wirklich zurücksetzen?"
++msgstr "CAM wird benutzt - wirklich zurÃ¼cksetzen?"
+ 
+ msgid "Can't reset CAM!"
+-msgstr "Zurücksetzen des CAM fehlgeschlagen!"
++msgstr "ZurÃ¼cksetzen des CAM fehlgeschlagen!"
+ 
+ msgid "no instant recording"
+ msgstr "keine Sofortaufnahme"
+ 
+ msgid "confirm instant recording"
+-msgstr "Sofortaufnahme bestätigen"
++msgstr "Sofortaufnahme bestÃ¤tigen"
+ 
+ msgid "record instantly"
+ msgstr "sofort aufnehmen"
+@@ -1238,13 +1241,13 @@
+ msgstr "Live-Signal nicht anhalten"
+ 
+ msgid "confirm pause live video"
+-msgstr "Anhalten des Live-Signals bestätigen"
++msgstr "Anhalten des Live-Signals bestÃ¤tigen"
+ 
+ msgid "pause live video"
+ msgstr "Live-Signal anhalten"
+ 
+ msgid "confirm"
+-msgstr "bestätigen"
++msgstr "bestÃ¤tigen"
+ 
+ msgid "yes"
+ msgstr "ja"
+@@ -1259,7 +1262,7 @@
+ msgstr "Nachlauf am Timer-Ende (min)"
+ 
+ msgid "Setup.Recording$Default priority"
+-msgstr "Default-Priorität"
++msgstr "Default-PrioritÃ¤t"
+ 
+ msgid "Setup.Recording$Default lifetime (d)"
+ msgstr "Default-Lebensdauer (d)"
+@@ -1271,7 +1274,7 @@
+ msgstr "Funktion der Pause-Taste"
+ 
+ msgid "Setup.Recording$Pause priority"
+-msgstr "Pause-Priorität"
++msgstr "Pause-PrioritÃ¤t"
+ 
+ msgid "Setup.Recording$Pause lifetime (d)"
+ msgstr "Pause-Lebensdauer (d)"
+@@ -1298,19 +1301,19 @@
+ msgstr "laufende Sendung"
+ 
+ msgid "Setup.Recording$Max. video file size (MB)"
+-msgstr "Max. Videodateigröße (MB)"
++msgstr "Max. VideodateigrÃ¶ÃŸe (MB)"
+ 
+ msgid "Setup.Recording$Split edited files"
+ msgstr "Editierte Dateien aufteilen"
+ 
+ msgid "Setup.Recording$Delete timeshift recording"
+-msgstr "Zeitversetzte Aufnahme löschen"
++msgstr "Zeitversetzte Aufnahme lÃ¶schen"
+ 
+ msgid "Replay"
+ msgstr "Wiedergabe"
+ 
+ msgid "Setup.Replay$Multi speed mode"
+-msgstr "Mehrstufiger Vor-/Rücklauf"
++msgstr "Mehrstufiger Vor-/RÃ¼cklauf"
+ 
+ msgid "Setup.Replay$Show replay mode"
+ msgstr "Wiedergabestatus anzeigen"
+@@ -1319,7 +1322,7 @@
+ msgstr "Verbleibende Zeit anzeigen"
+ 
+ msgid "Setup.Replay$Progress display time (s)"
+-msgstr "Anzeigedauer für Fortschrittsanzeige (s)"
++msgstr "Anzeigedauer fÃ¼r Fortschrittsanzeige (s)"
+ 
+ msgid "Setup.Replay$Pause replay when setting mark"
+ msgstr "Pause beim Setzen einer Schnittmarke"
+@@ -1328,7 +1331,7 @@
+ msgstr "Pause beim Sprung auf eine Schnittmarke"
+ 
+ msgid "Setup.Replay$Skip edited parts"
+-msgstr "Herausgeschnittene Teile überspringen"
++msgstr "Herausgeschnittene Teile Ã¼berspringen"
+ 
+ msgid "Setup.Replay$Pause replay at last mark"
+ msgstr "Pause an der letzten Schnittmarke"
+@@ -1343,13 +1346,13 @@
+ msgstr "Alternatives Verhalten beim adapt. Springen"
+ 
+ msgid "Setup.Replay$Use Prev/Next keys for adaptive skipping"
+-msgstr "Adaptives Springen mit Zurück/Vorwärts-Tasten"
++msgstr "Adaptives Springen mit ZurÃ¼ck/VorwÃ¤rts-Tasten"
+ 
+ msgid "Setup.Replay$Skip distance with Green/Yellow keys (s)"
+-msgstr "Sprungweite mit Taste Grün/Gelb (s)"
++msgstr "Sprungweite mit Taste GrÃ¼n/Gelb (s)"
+ 
+ msgid "Setup.Replay$Skip distance with Green/Yellow keys in repeat (s)"
+-msgstr "Sprungweite mit Taste Grün/Gelb bei Wiederh. (s)"
++msgstr "Sprungweite mit Taste GrÃ¼n/Gelb bei Wiederh. (s)"
+ 
+ msgid "Setup.Replay$Resume ID"
+ msgstr "Wiedergabe-ID"
+@@ -1370,13 +1373,13 @@
+ msgstr "Sonstiges"
+ 
+ msgid "Setup.Miscellaneous$Min. event timeout (min)"
+-msgstr "Brückenzeit zwischen Timern (min)"
++msgstr "BrÃ¼ckenzeit zwischen Timern (min)"
+ 
+ msgid "Setup.Miscellaneous$Min. user inactivity (min)"
+-msgstr "VDR ausschalten bei Inaktivität (min)"
++msgstr "VDR ausschalten bei InaktivitÃ¤t (min)"
+ 
+ msgid "Setup.Miscellaneous$SVDRP timeout (s)"
+-msgstr "SVDRP trennen bei Inaktivität (s)"
++msgstr "SVDRP trennen bei InaktivitÃ¤t (s)"
+ 
+ msgid "Setup.Miscellaneous$SVDRP peering"
+ msgstr "SVDRP Verbindung"
+@@ -1388,13 +1391,13 @@
+ msgstr "SVDRP Standardmaschine"
+ 
+ msgid "Setup.Miscellaneous$Zap timeout (s)"
+-msgstr "Mindestzeit für vorherigen Kanal (s)"
++msgstr "Mindestzeit fÃ¼r vorherigen Kanal (s)"
+ 
+ msgid "Setup.Miscellaneous$Channel entry timeout (ms)"
+-msgstr "Zeitlimit für Kanaleingabe (ms)"
++msgstr "Zeitlimit fÃ¼r Kanaleingabe (ms)"
+ 
+ msgid "Setup.Miscellaneous$Remote control repeat delay (ms)"
+-msgstr "Fernbedienung Wiederholverzögerung (ms)"
++msgstr "Fernbedienung WiederholverzÃ¶gerung (ms)"
+ 
+ msgid "Setup.Miscellaneous$Remote control repeat delta (ms)"
+ msgstr "Fernbedienung Wiederholintervall (ms)"
+@@ -1406,13 +1409,13 @@
+ msgstr "wie vorher"
+ 
+ msgid "Setup.Miscellaneous$Initial volume"
+-msgstr "Lautstärke beim Einschalten"
++msgstr "LautstÃ¤rke beim Einschalten"
+ 
+ msgid "Setup.Miscellaneous$Volume steps"
+-msgstr "Anzahl Lautstärke Schritte"
++msgstr "Anzahl LautstÃ¤rke Schritte"
+ 
+ msgid "Setup.Miscellaneous$Volume linearize"
+-msgstr "Lautstärke Kurve korrigieren"
++msgstr "LautstÃ¤rke Kurve korrigieren"
+ 
+ msgid "Setup.Miscellaneous$Channels wrap"
+ msgstr "Rundum zappen"
+@@ -1466,16 +1469,16 @@
+ msgstr "Bearbeitung abbrechen?"
+ 
+ msgid "No audio available!"
+-msgstr "Kein Audio verfügbar!"
++msgstr "Kein Audio verfÃ¼gbar!"
+ 
+ msgid "No subtitles"
+ msgstr "Keine Untertitel"
+ 
+ msgid "No subtitles available!"
+-msgstr "Keine Untertitel verfügbar!"
++msgstr "Keine Untertitel verfÃ¼gbar!"
+ 
+ msgid "Not enough disk space to start recording!"
+-msgstr "Nicht genügend Plattenplatz für Aufnahme!"
++msgstr "Nicht genÃ¼gend Plattenplatz fÃ¼r Aufnahme!"
+ 
+ msgid "No free DVB device to record!"
+ msgstr "Keine freie DVB-Karte zum Aufnehmen!"
+@@ -1484,7 +1487,7 @@
+ msgstr "Live-Signal wird angehalten..."
+ 
+ msgid "Delete timeshift recording?"
+-msgstr "Zeitversetzte Aufnahme löschen?"
++msgstr "Zeitversetzte Aufnahme lÃ¶schen?"
+ 
+ #. TRANSLATORS: note the trailing blank!
+ msgid "Jump: "
+@@ -1545,13 +1548,13 @@
+ msgstr "Regenerierung der Index-Datei fehlgeschlagen!"
+ 
+ msgid "Can't shutdown - option '-s' not given!"
+-msgstr "Ausschalten unmöglich - Option '-s' fehlt!"
++msgstr "Ausschalten unmÃ¶glich - Option '-s' fehlt!"
+ 
+ msgid "Editing - shut down anyway?"
+-msgstr "Bearbeitung läuft - trotzdem ausschalten?"
++msgstr "Bearbeitung lÃ¤uft - trotzdem ausschalten?"
+ 
+ msgid "Recording - shut down anyway?"
+-msgstr "Aufnahme läuft - trotzdem ausschalten?"
++msgstr "Aufnahme lÃ¤uft - trotzdem ausschalten?"
+ 
+ #, c-format
+ msgid "Recording in %jd minutes, shut down anyway?"
+@@ -1593,7 +1596,7 @@
+ msgstr "TIMER"
+ 
+ msgid "DEVICES"
+-msgstr "EMPFÄNGER"
++msgstr "EMPFÃ„NGER"
+ 
+ msgid "LIVE"
+ msgstr "LIVE"
+@@ -1638,7 +1641,7 @@
+ msgstr "Sonntag"
+ 
+ msgid "Upcoming recording!"
+-msgstr "Aufnahme beginnt in Kürze!"
++msgstr "Aufnahme beginnt in KÃ¼rze!"
+ 
+ msgid "Pause live video?"
+ msgstr "Live-Signal anhalten?"
+@@ -1650,10 +1653,10 @@
+ msgstr "Aufzeichnung gestartet"
+ 
+ msgid "VDR will shut down later - press Power to force"
+-msgstr "VDR schaltet später aus - Power zum Erzwingen"
++msgstr "VDR schaltet spÃ¤ter aus - Power zum Erzwingen"
+ 
+ msgid "Press any key to cancel shutdown"
+-msgstr "Taste drücken, um Ausschalten abzubrechen"
++msgstr "Taste drÃ¼cken, um Ausschalten abzubrechen"
+ 
+ msgid "Editing process failed!"
+ msgstr "Bearbeitung gescheitert!"
+@@ -1662,10 +1665,10 @@
+ msgstr "Bearbeitung beendet"
+ 
+ msgid "Switching primary DVB..."
+-msgstr "Primäres Interface wird umgeschaltet..."
++msgstr "PrimÃ¤res Interface wird umgeschaltet..."
+ 
+ msgid "Press any key to cancel restart"
+-msgstr "Taste drücken, um Neustart abzubrechen"
++msgstr "Taste drÃ¼cken, um Neustart abzubrechen"
+ 
+ #, c-format
+ msgid "VDR will shut down in %s minutes"
+diff -uNr vdr-2.6.7/po/el_GR.po vdr-2.6.7-patched/po/el_GR.po
+--- vdr-2.6.7/po/el_GR.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/el_GR.po	2024-05-15 00:10:24.874891752 +0200
+@@ -1128,6 +1128,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr ""
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/es_ES.po vdr-2.6.7-patched/po/es_ES.po
+--- vdr-2.6.7/po/es_ES.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/es_ES.po	2024-05-15 00:10:24.874891752 +0200
+@@ -1129,6 +1129,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Transparencia fondo subtítulos"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/et_EE.po vdr-2.6.7-patched/po/et_EE.po
+--- vdr-2.6.7/po/et_EE.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/et_EE.po	2024-05-15 00:10:24.874891752 +0200
+@@ -1128,6 +1128,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Subtiitri tausta lÃ¤bipaistvus"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr "Teleteksti tugi"
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/fi_FI.po vdr-2.6.7-patched/po/fi_FI.po
+--- vdr-2.6.7/po/fi_FI.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/fi_FI.po	2024-05-15 00:10:24.874891752 +0200
+@@ -1132,6 +1132,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Tekstityksen taustan lÃ¤pinÃ¤kyvyys"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr "Salli teksti-TV-tuki"
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/fr_FR.po vdr-2.6.7-patched/po/fr_FR.po
+--- vdr-2.6.7/po/fr_FR.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/fr_FR.po	2024-05-15 00:10:24.874891752 +0200
+@@ -1139,6 +1139,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Transparence du fond des sous-titres"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/hr_HR.po vdr-2.6.7-patched/po/hr_HR.po
+--- vdr-2.6.7/po/hr_HR.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/hr_HR.po	2024-05-15 00:10:24.874891752 +0200
+@@ -1130,6 +1130,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Transparentnost pozadine titla"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/hu_HU.po vdr-2.6.7-patched/po/hu_HU.po
+--- vdr-2.6.7/po/hu_HU.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/hu_HU.po	2024-05-15 00:10:24.874891752 +0200
+@@ -1136,6 +1136,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Felirat hÃ¡tterÃ©nek transzparenciÃ¡ja"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/it_IT.po vdr-2.6.7-patched/po/it_IT.po
+--- vdr-2.6.7/po/it_IT.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/it_IT.po	2024-05-15 00:10:24.874891752 +0200
+@@ -1134,6 +1134,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Trasparenza sfondo sottotitoli"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/lt_LT.po vdr-2.6.7-patched/po/lt_LT.po
+--- vdr-2.6.7/po/lt_LT.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/lt_LT.po	2024-05-15 00:10:24.878224974 +0200
+@@ -1128,6 +1128,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "SubtitrÅ³ fono permatomumas"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "Konverteris (LNB)"
+ 
+diff -uNr vdr-2.6.7/po/mk_MK.po vdr-2.6.7-patched/po/mk_MK.po
+--- vdr-2.6.7/po/mk_MK.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/mk_MK.po	2024-05-15 00:10:24.878224974 +0200
+@@ -1130,6 +1130,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "ÐŸÑ€Ð¾Ð²Ð¸Ð´Ð½Ð¾ÑÑ‚ Ð½Ð° Ð¿Ð¾Ð·Ð°Ð´Ð¸Ð½Ð°Ñ‚Ð° Ð½Ð° Ñ‚Ð¸Ñ‚Ð»Ð¾Ñ‚"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/nl_NL.po vdr-2.6.7-patched/po/nl_NL.po
+--- vdr-2.6.7/po/nl_NL.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/nl_NL.po	2024-05-15 00:10:24.878224974 +0200
+@@ -1134,6 +1134,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Transparantie achtergrond ondertiteling"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/nn_NO.po vdr-2.6.7-patched/po/nn_NO.po
+--- vdr-2.6.7/po/nn_NO.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/nn_NO.po	2024-05-15 00:10:24.878224974 +0200
+@@ -1129,6 +1129,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr ""
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/pl_PL.po vdr-2.6.7-patched/po/pl_PL.po
+--- vdr-2.6.7/po/pl_PL.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/pl_PL.po	2024-05-15 00:10:24.878224974 +0200
+@@ -1133,6 +1133,10 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "PrzeÅºrocze podtytuÅ‚Ã³w: TÅ‚o"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/pt_PT.po vdr-2.6.7-patched/po/pt_PT.po
+--- vdr-2.6.7/po/pt_PT.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/pt_PT.po	2024-05-15 00:10:24.878224974 +0200
+@@ -1129,6 +1129,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Transparência de fundo das legendas"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/ro_RO.po vdr-2.6.7-patched/po/ro_RO.po
+--- vdr-2.6.7/po/ro_RO.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/ro_RO.po	2024-05-15 00:10:24.878224974 +0200
+@@ -1130,6 +1130,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "TransparenÅ£a fundalului subtitrÄƒrii"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/ru_RU.po vdr-2.6.7-patched/po/ru_RU.po
+--- vdr-2.6.7/po/ru_RU.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/ru_RU.po	2024-05-15 00:10:24.878224974 +0200
+@@ -1129,6 +1129,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "ÐŸÑ€Ð¾Ð·Ñ€Ð°Ñ‡Ð½Ð¾ÑÑ‚ÑŒ Ñ„Ð¾Ð½Ð° ÑÑƒÐ±Ñ‚Ð¸Ñ‚Ñ€Ð¾Ð²"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "ÐšÐ¾Ð½Ð²ÐµÑ€Ñ‚ÐµÑ€"
+ 
+diff -uNr vdr-2.6.7/po/sk_SK.po vdr-2.6.7-patched/po/sk_SK.po
+--- vdr-2.6.7/po/sk_SK.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/sk_SK.po	2024-05-15 00:10:24.878224974 +0200
+@@ -1129,6 +1129,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Priehµadnos» pozadia titulkov"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB (nízko ¹umová jednotka)"
+ 
+diff -uNr vdr-2.6.7/po/sl_SI.po vdr-2.6.7-patched/po/sl_SI.po
+--- vdr-2.6.7/po/sl_SI.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/sl_SI.po	2024-05-15 00:10:24.881558196 +0200
+@@ -1129,6 +1129,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Transparentnost ozadja podnapisov"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/sr_RS.po vdr-2.6.7-patched/po/sr_RS.po
+--- vdr-2.6.7/po/sr_RS.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/sr_RS.po	2024-05-15 00:10:24.881558196 +0200
+@@ -1129,6 +1129,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Providnost pozadine titla"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/sv_SE.po vdr-2.6.7-patched/po/sv_SE.po
+--- vdr-2.6.7/po/sv_SE.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/sv_SE.po	2024-05-15 00:10:24.881558196 +0200
+@@ -1133,6 +1133,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Transparent bakgrund textremsa"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/tr_TR.po vdr-2.6.7-patched/po/tr_TR.po
+--- vdr-2.6.7/po/tr_TR.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/tr_TR.po	2024-05-15 00:10:24.881558196 +0200
+@@ -1128,6 +1128,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "Altyazý arka þeffaflýk"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "LNB"
+ 
+diff -uNr vdr-2.6.7/po/uk_UA.po vdr-2.6.7-patched/po/uk_UA.po
+--- vdr-2.6.7/po/uk_UA.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/uk_UA.po	2024-05-15 00:10:24.881558196 +0200
+@@ -1129,6 +1129,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "ÐŸÑ€Ð¾Ð·Ð¾Ñ€Ñ–ÑÑ‚ÑŒ Ð·Ð°Ð´Ð½ÑŒÐ¾Ð³Ð¾ Ð¿Ð»Ð°Ð½Ñƒ ÑÑƒÐ±Ñ‚Ð¸Ñ‚Ñ€Ñ–Ð²"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "ÐšÐ¾Ð½Ð²ÐµÑ€Ñ‚ÐµÑ€"
+ 
+diff -uNr vdr-2.6.7/po/zh_CN.po vdr-2.6.7-patched/po/zh_CN.po
+--- vdr-2.6.7/po/zh_CN.po	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/po/zh_CN.po	2024-05-15 00:10:24.881558196 +0200
+@@ -1130,6 +1130,9 @@
+ msgid "Setup.DVB$Subtitle background transparency"
+ msgstr "å­—å¹•èƒŒæ™¯é€æ˜Žåº¦"
+ 
++msgid "Setup.DVB$Enable teletext support"
++msgstr ""
++
+ msgid "LNB"
+ msgstr "åˆ‡æ¢å™¨è®¾ç½®"
+ 
+diff -uNr vdr-2.6.7/receiver.c vdr-2.6.7-patched/receiver.c
+--- vdr-2.6.7/receiver.c	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/receiver.c	2024-05-15 00:10:24.881558196 +0200
+@@ -82,7 +82,8 @@
+             (Channel->Ppid() == Channel->Vpid() || AddPid(Channel->Ppid())) &&
+             AddPids(Channel->Apids()) &&
+             AddPids(Channel->Dpids()) &&
+-            AddPids(Channel->Spids());
++            AddPids(Channel->Spids()) &&
++            (!Setup.SupportTeletext || AddPid(Channel->Tpid()));
+      }
+   return true;
+ }
+diff -uNr vdr-2.6.7/remux.c vdr-2.6.7-patched/remux.c
+--- vdr-2.6.7/remux.c	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/remux.c	2024-05-15 00:10:24.881558196 +0200
+@@ -429,6 +429,29 @@
+   return i;
+ }
+ 
++int cPatPmtGenerator::MakeTeletextDescriptor(uchar *Target, const tTeletextSubtitlePage *pages, int pageCount)
++{
++  int i = 0, j = 0;
++  Target[i++] = SI::TeletextDescriptorTag;
++  int l = i;
++  Target[i++] = 0x00; // length
++  for (int n = 0; n < pageCount; n++) {
++      const char* Language = pages[n].ttxtLanguage;
++      Target[i++] = *Language++;
++      Target[i++] = *Language++;
++      Target[i++] = *Language++;
++      Target[i++] = (pages[n].ttxtType << 3) + pages[n].ttxtMagazine;
++      Target[i++] = pages[n].ttxtPage;
++      j++;
++      }
++  if (j > 0) {
++     Target[l] = j * 5; // update length
++     IncEsInfoLength(i);
++     return i;
++     }
++  return 0;
++}
++
+ int cPatPmtGenerator::MakeLanguageDescriptor(uchar *Target, const char *Language)
+ {
+   int i = 0;
+@@ -516,6 +539,7 @@
+   if (Channel) {
+      int Vpid = Channel->Vpid();
+      int Ppid = Channel->Ppid();
++     int Tpid = Channel->Tpid();
+      uchar *p = buf;
+      int i = 0;
+      p[i++] = 0x02; // table id
+@@ -548,6 +572,10 @@
+          i += MakeStream(buf + i, 0x06, Channel->Spid(n));
+          i += MakeSubtitlingDescriptor(buf + i, Channel->Slang(n), Channel->SubtitlingType(n), Channel->CompositionPageId(n), Channel->AncillaryPageId(n));
+          }
++     if (Tpid) {
++        i += MakeStream(buf + i, 0x06, Tpid);
++        i += MakeTeletextDescriptor(buf + i, Channel->TeletextSubtitlePages(), Channel->TotalTeletextSubtitlePages());
++        }
+ 
+      int sl = i - SectionLength - 2 + 4; // -2 = SectionLength storage, +4 = length of CRC
+      buf[SectionLength] |= (sl >> 8) & 0x0F;
+@@ -622,6 +650,7 @@
+   pmtPids[0] = 0;
+   vpid = vtype = 0;
+   ppid = 0;
++  tpid = 0;
+ }
+ 
+ void cPatPmtParser::ParsePat(const uchar *Data, int Length)
+@@ -710,11 +739,13 @@
+      int NumSpids = 0;
+      vpid = vtype = 0;
+      ppid = 0;
++     tpid = 0;
+      apids[0] = 0;
+      dpids[0] = 0;
+      spids[0] = 0;
+      atypes[0] = 0;
+      dtypes[0] = 0;
++     totalTtxtSubtitlePages = 0;
+      SI::PMT::Stream stream;
+      for (SI::Loop::Iterator it; Pmt.streamLoop.getNext(stream, it); ) {
+          dbgpatpmt("     stream type = %02X, pid = %d", stream.getStreamType(), stream.getPid());
+@@ -814,6 +845,28 @@
+                                     spids[NumSpids] = 0;
+                                     }
+                                  break;
++                            case SI::TeletextDescriptorTag: {
++                                 dbgpatpmt(" teletext");
++                                 tpid = stream.getPid();
++                                 SI::TeletextDescriptor *sd = (SI::TeletextDescriptor *)d;
++                                 SI::TeletextDescriptor::Teletext ttxt;
++                                 if (totalTtxtSubtitlePages < MAXTXTPAGES) {
++                                    for (SI::Loop::Iterator it; sd->teletextLoop.getNext(ttxt, it); ) {
++                                        bool isSubtitlePage = (ttxt.getTeletextType() == 0x02) || (ttxt.getTeletextType() == 0x05);
++                                        if (isSubtitlePage && ttxt.languageCode[0]) {
++                                           dbgpatpmt(" '%s:%x.%x'", ttxt.languageCode, ttxt.getTeletextMagazineNumber(), ttxt.getTeletextPageNumber());
++                                           strn0cpy(teletextSubtitlePages[totalTtxtSubtitlePages].ttxtLanguage, I18nNormalizeLanguageCode(ttxt.languageCode), MAXLANGCODE1);
++                                           teletextSubtitlePages[totalTtxtSubtitlePages].ttxtPage = ttxt.getTeletextPageNumber();
++                                           teletextSubtitlePages[totalTtxtSubtitlePages].ttxtMagazine = ttxt.getTeletextMagazineNumber();
++                                           teletextSubtitlePages[totalTtxtSubtitlePages].ttxtType = ttxt.getTeletextType();
++                                           totalTtxtSubtitlePages++;
++                                           if (totalTtxtSubtitlePages >= MAXTXTPAGES)
++                                              break;
++                                           }
++                                        }
++                                    }
++                                 }
++                                 break;
+                             case SI::ISO639LanguageDescriptorTag: {
+                                  SI::ISO639LanguageDescriptor *ld = (SI::ISO639LanguageDescriptor *)d;
+                                  dbgpatpmt(" '%s'", ld->languageCode);
+diff -uNr vdr-2.6.7/remux.h vdr-2.6.7-patched/remux.h
+--- vdr-2.6.7/remux.h	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/remux.h	2024-05-15 00:10:24.881558196 +0200
+@@ -313,6 +313,7 @@
+   int MakeStream(uchar *Target, uchar Type, int Pid);
+   int MakeAC3Descriptor(uchar *Target, uchar Type);
+   int MakeSubtitlingDescriptor(uchar *Target, const char *Language, uchar SubtitlingType, uint16_t CompositionPageId, uint16_t AncillaryPageId);
++  int MakeTeletextDescriptor(uchar *Target, const tTeletextSubtitlePage *pages, int pageCount);
+   int MakeLanguageDescriptor(uchar *Target, const char *Language);
+   int MakeCRC(uchar *Target, const uchar *Data, int Length);
+   void GeneratePmtPid(const cChannel *Channel);
+@@ -360,6 +361,7 @@
+   int vpid;
+   int ppid;
+   int vtype;
++  int tpid;
+   int apids[MAXAPIDS + 1]; // list is zero-terminated
+   int atypes[MAXAPIDS + 1]; // list is zero-terminated
+   char alangs[MAXAPIDS][MAXLANGCODE2];
+@@ -373,6 +375,8 @@
+   uint16_t ancillaryPageIds[MAXSPIDS];
+   bool updatePrimaryDevice;
+   bool completed;
++  int totalTtxtSubtitlePages;
++  tTeletextSubtitlePage teletextSubtitlePages[MAXTXTPAGES];
+ protected:
+   int SectionLength(const uchar *Data, int Length) { return (Length >= 3) ? ((int(Data[1]) & 0x0F) << 8)| Data[2] : 0; }
+ public:
+@@ -409,6 +413,9 @@
+   int Vtype(void) const { return vtype; }
+        ///< Returns the video stream type as defined by the current PMT, or 0 if no video
+        ///< stream type has been detected, yet.
++  int Tpid(void) { return tpid; }
++       ///< Returns the teletext pid as defined by the current PMT, or 0 if no teletext
++       ///< pid has been detected, yet.
+   bool Completed(void) { return completed; }
+        ///< Returns true if the PMT has been completely parsed.
+   const int *Apids(void) const { return apids; }
+@@ -425,6 +432,8 @@
+   uchar SubtitlingType(int i) const { return (0 <= i && i < MAXSPIDS) ? subtitlingTypes[i] : uchar(0); }
+   uint16_t CompositionPageId(int i) const { return (0 <= i && i < MAXSPIDS) ? compositionPageIds[i] : uint16_t(0); }
+   uint16_t AncillaryPageId(int i) const { return (0 <= i && i < MAXSPIDS) ? ancillaryPageIds[i] : uint16_t(0); }
++  const tTeletextSubtitlePage *TeletextSubtitlePages() const { return teletextSubtitlePages; }
++  int TotalTeletextSubtitlePages() const { return totalTtxtSubtitlePages; }
+   };
+ 
+ // EIT Generator:
+diff -uNr vdr-2.6.7/vdr.5 vdr-2.6.7-patched/vdr.5
+--- vdr-2.6.7/vdr.5	2024-04-02 09:05:33.000000000 +0200
++++ vdr-2.6.7-patched/vdr.5	2024-05-15 00:10:24.884891418 +0200
+@@ -249,6 +249,12 @@
+ 
+ .B ...:201;2001=deu,2002=eng:...
+ 
++Manual teletext subtitling pages can be defined separated by a '+' sign.
++The pages (separated by commas) can contain language codes, delimited by a '='
++sign, as in
++
++.B ...:201+150=deu,151=fin;2001,2002:...
++
+ .TP
+ .B Conditional access
+ A hexadecimal integer defining how this channel can be accessed:
+diff -uNr vdr-2.6.7/vdrttxtsubshooks.c vdr-2.6.7-patched/vdrttxtsubshooks.c
+--- vdr-2.6.7/vdrttxtsubshooks.c	1970-01-01 01:00:00.000000000 +0100
++++ vdr-2.6.7-patched/vdrttxtsubshooks.c	2024-05-15 00:10:24.884891418 +0200
+@@ -0,0 +1,63 @@
++/*
++ * vdr-ttxtsubs - A plugin for the Linux Video Disk Recorder
++ * Copyright (c) 2003 - 2008 Ragnar Sundblad <ragge@nada.kth.se>
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2 of the License, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License along with
++ * this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ *
++ */
++
++#include <stdlib.h>
++#include <stdio.h>
++#include <stdint.h>
++
++#include "vdrttxtsubshooks.h"
++
++// XXX Really should be a list...
++static cVDRTtxtsubsHookListener *gListener;
++
++// ------ class cVDRTtxtsubsHookProxy ------
++
++class cVDRTtxtsubsHookProxy : public cVDRTtxtsubsHookListener
++{
++ public:
++  virtual void HideOSD(void) { if(gListener) gListener->HideOSD(); };
++  virtual void ShowOSD(void) { if(gListener) gListener->ShowOSD(); };
++  virtual void PlayerTeletextData(uint8_t *p, int length, bool IsPesRecording, const struct tTeletextSubtitlePage teletextSubtitlePages[] = NULL, int pageCount = 0)
++    { if(gListener) gListener->PlayerTeletextData(p, length, IsPesRecording, teletextSubtitlePages, pageCount); };
++  virtual int ManualPageNumber(const cChannel *channel)
++    { if(gListener) return gListener->ManualPageNumber(channel); else return 0; };
++};
++
++
++// ------ class cVDRTtxtsubsHookListener ------
++
++cVDRTtxtsubsHookListener::~cVDRTtxtsubsHookListener()
++{
++  gListener = 0;
++}
++
++void cVDRTtxtsubsHookListener::HookAttach(void)
++{
++  gListener = this;
++  //printf("cVDRTtxtsubsHookListener::HookAttach\n");
++}
++
++static cVDRTtxtsubsHookProxy gProxy;
++
++cVDRTtxtsubsHookListener *cVDRTtxtsubsHookListener::Hook(void)
++{
++  return &gProxy;
++}
++
+diff -uNr vdr-2.6.7/vdrttxtsubshooks.h vdr-2.6.7-patched/vdrttxtsubshooks.h
+--- vdr-2.6.7/vdrttxtsubshooks.h	1970-01-01 01:00:00.000000000 +0100
++++ vdr-2.6.7-patched/vdrttxtsubshooks.h	2024-05-15 00:10:24.884891418 +0200
+@@ -0,0 +1,46 @@
++/*
++ * vdr-ttxtsubs - A plugin for the Linux Video Disk Recorder
++ * Copyright (c) 2003 - 2008 Ragnar Sundblad <ragge@nada.kth.se>
++ *
++ * This program is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License as published by the
++ * Free Software Foundation; either version 2 of the License, or (at your option)
++ * any later version.
++ *
++ * This program is distributed in the hope that it will be useful, but
++ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
++ * details.
++ *
++ * You should have received a copy of the GNU General Public License along with
++ * this program; if not, write to the Free Software Foundation, Inc.,
++ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ *
++ */
++
++#ifndef __VDRTTXTSUBSHOOKS_H
++#define __VDRTTXTSUBSHOOKS_H
++
++#define TTXTSUBSVERSNUM 2
++
++class cDevice;
++class cChannel;
++struct tTeletextSubtitlePage;
++
++class cVDRTtxtsubsHookListener {
++ public:
++  cVDRTtxtsubsHookListener(void) {};
++  virtual ~cVDRTtxtsubsHookListener();
++
++  void HookAttach(void);
++
++  virtual void HideOSD(void) {};
++  virtual void ShowOSD(void) {};
++  virtual void PlayerTeletextData(uint8_t *p, int length, bool IsPesRecording = true, const struct tTeletextSubtitlePage teletextSubtitlePages[] = NULL, int pageCount = 0) {};
++  virtual int ManualPageNumber(const cChannel *channel) { return 0; };
++
++  // used by VDR to call hook listeners
++  static cVDRTtxtsubsHookListener *Hook(void);
++};
++
++#endif

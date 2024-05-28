@@ -1,0 +1,24 @@
+diff -uNr vdradmin-am-3.6.13-orig/template/default/timer_new.html vdradmin-am-3.6.13/template/default/timer_new.html
+--- vdradmin-am-3.6.13-orig/template/default/timer_new.html	2023-06-04 21:13:32.000000000 +0200
++++ vdradmin-am-3.6.13/template/default/timer_new.html	2024-05-27 21:34:06.651880476 +0200
+@@ -163,7 +163,8 @@
+ 			<tr class="<?% tr_class %?>">
+ 				<?% tr_class = (tr_class == "row_odd" ? "row_even" : "row_odd") %?>
+ 				<td class="col_label"><h5><?% gettext('Title of Recording:') %?></h5></td>
+-				<td class="col_value"><input type="text" name="title" value="<?% title | html %?>" size="80" /></td>
++				<td class="col_value"><input type="text" name="title"
++							     value="<?% title | html %?><?% IF imdb %?>-<?% imdb %?><?% END %?>" size="80" /></td>
+ 			</tr>
+ 			<tr class="<?% tr_class %?>">
+ 				<?% tr_class = (tr_class == "row_odd" ? "row_even" : "row_odd") %?>
+diff -uNr vdradmin-am-3.6.13-orig/vdradmind.pl vdradmin-am-3.6.13/vdradmind.pl
+--- vdradmin-am-3.6.13-orig/vdradmind.pl	2024-05-27 21:29:45.680546670 +0200
++++ vdradmin-am-3.6.13/vdradmind.pl	2024-05-27 21:32:47.137854276 +0200
+@@ -5075,6 +5075,7 @@
+                  hide_at_check => $this_event->{hide_at_check},
+                  referer   => $ref ? Encode_Referer($ref) : undef,
+                  tool      => $this_event->{tool},
++                 imdb      => $q->param("imdb") || 0,
+                  help_url  => HelpURL("timer_new")
+     };
+     return showTemplate("timer_new.html", $vars);
