@@ -27,12 +27,16 @@
   (merge-pathnames ".config/filmsearch.conf" (user-homedir-pathname))
   "configuration file")
 
+(defun file-to-list (file)
+  (with-open-file (in file)
+    (with-standard-io-syntax
+      (loop for obj = (read in nil)
+            while obj collect obj))))
+
 (defun read-config ()
   "Read configuration from configuration file."
   (when *config-file*
-    (with-open-file (in *config-file*)
-      (with-standard-io-syntax
-        (setf *config* (read in))))))
+    (setf *config* (file-to-list *config-file*))))
 
 (defun cv (name)
   "Get configuration value."
@@ -80,8 +84,8 @@
 
 (defun channel-by-name (name)
   "Get the channel by name."
-  (find-if (lambda (x) (cl-ppcre:scan (format nil "^~a(,.*|;.*)?$" name)
-                                      (getf x :name))) *channels*))
+  (find-if #'(lambda (x) (cl-ppcre:scan (format nil "^~a(,.*|;.*)?$" name)
+                                        (getf x :name))) *channels*))
 
 (defun universal->unix-time (universal-time)
   "Conversion from universal time to unix time."
@@ -134,7 +138,7 @@
 (defun remove-old-epg-entries ()
   "Remove too old entries."
   (setf *epg*
-        (remove-if-not (lambda (x) (check-date (getf x :start))) *epg*)))
+        (remove-if-not #'(lambda (x) (check-date (getf x :start))) *epg*)))
 
 (defun check-duration (d runtime)
   "Check the duration."
@@ -320,12 +324,6 @@
       (let ((*print-case* :downcase))
         (pprint *epg* out)))))
 
-(defun read-fs ()
-  "Read filmsearch entries."
-  (with-open-file (in (cv :fs-entries))
-    (with-standard-io-syntax
-      (read in))))
-
 (defun main ()
   "Main program."
   (if (second sb-ext:*posix-argv*)
@@ -333,7 +331,7 @@
   (read-config)
   (when (new-epg)
     (setf *channels* (read-channels)
-          *fs-entries* (read-fs))
+          *fs-entries* (file-to-list (cv :fs-entries)))
     (filmsearch)))
 
 ;; Local Variables:
