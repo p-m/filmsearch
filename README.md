@@ -36,9 +36,6 @@ useful error messages.
 - Add the timers (see also the patch for VDRAdmin).
 - Adjust the search entries (e.g. `~/fs/entries`), especially when there are too
   many wrong matches.
-- Check and edit the new recordings,  (useful plug-in: MarkAd).
+- Check and edit the new recordings (useful plug-in: MarkAd).
 - Cut.
 - Wait for MKV files becoming available.
-
-LocalWords:  FilmSearch EPG VDR filmsearch cronjob crond crontab imdb2fs
-LocalWords:  MiniDLNA tt12345 VDRAdmin MarkAd
