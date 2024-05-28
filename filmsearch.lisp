@@ -296,7 +296,8 @@ Upper limit is high, because there can be ads."
         (symbol-macrolet ((mc (cdr (assoc 'match-count fs))))
           (unless mc
             (rplacd (last fs) (copy-alist (list (cons 'match-count 0)))))
-          (when (and (< mc (cv :max-matches))
+          (when (and (null (cdr (assoc 'sleep fs)))
+                     (< mc (cv :max-matches))
                      (find-match fs epg))
             (incf mc)
             (print-match fs epg))))
