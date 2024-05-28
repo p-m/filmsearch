@@ -141,22 +141,19 @@
         (remove-if-not #'(lambda (x) (check-date (getf x :start))) *epg*)))
 
 (defun check-duration (d runtime)
-  "Check the duration."
+  "Check the duration.
+Upper limit is high, because there can be ads."
   (if runtime
-      (> d (* 60 8/10 runtime))
+      (let ((r (* 60 runtime)))
+        (< (* 8/10 r) d (* 2 r)))
       t))
 
 (defun check-year (d years)
   "Check the release year."
-  (if years
-      (if (cl-ppcre:scan
-           (format nil "~{~a~^|~}"
-                   (loop for i from (- (apply 'min years) 2)
-                           to (+ (apply 'max years) 2)
-                         collect i)) d)
-          t
-          (not (cl-ppcre:scan "[^0-9](1[89]|2[01])[0-9]{2}[^0-9]" d)))
-      t))
+  (cl-ppcre:scan (format nil "~{~a~^|~}"
+                         (loop for i from (- (apply 'min years) 2)
+                                 to (+ (apply 'max years) 2)
+                               collect i)) d))
 
 (defun string->reg (s)
   "Convert string to regular expression."
