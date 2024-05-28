@@ -1,0 +1,3 @@
+PATH=/usr/bin:/bin:/home/vdr/fs
+22 */3 * * * make-mkv fs/config
+55 */2 * * * filmsearch fs/config

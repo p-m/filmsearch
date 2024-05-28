@@ -1,0 +1,36 @@
+;; -*- mode: emacs-lisp; -*-
+
+;; Just a title:
+((titles "Alcaline, le concert"))
+
+;; Title with IMDB-ID:
+((titles "Jerks") (id "tt6071060"))
+
+;; Several languages:
+((titles "The Cabinet of Dr. Caligari" "Das Cabinet des Dr. Caligari")
+ (id "tt0010323") (years 1920) (runtime 67) (rating 8.0)
+ (akas (fr "Le cabinet du docteur Caligari")
+       (de "Das Kabinett des Doktor Caligari")))
+
+;; Match at least one keyword:
+(one-keyword "Tiefsee" "Tauchen")
+
+;; Match all keywords:
+(all-keywords "NBA" "Canada")
+
+;; Use explicit regular expression:
+((titles "Dr. Jekyll and Mr. Hyde") (title-regex "Jekyll.*Hyde")
+ (id "tt0011130") (years 1920) (runtime 69) (rating 6.9)
+ (akas (fr "Le Docteur Jekyll et M. Hyde") (de "Dr. Jekyll und Mr. Hyde")))
+
+;; Title is not a substring, it must match exactly:
+((titles "It") (id "tt1396484") (exact-title t))
+
+;; Check title, year and runtime:
+((titles "Victoria") (id "tt4226388") (years 2015) (runtime 138) (rating 7.6)
+ (checks year title runtime)
+ (akas (en "My Name Is Victoria") (de "Eins Zwei Fünf Acht")))
+
+;; Inactive entry:
+((titles "Shaun the Sheep") (id "tt0983983") (runtime 7) (sleep t)
+ (rating 8.2) (akas (fr "Shaun le mouton") (de "Shaun das Schaf")))

@@ -1,21 +1,44 @@
-# filmsearch
-Search EPG for films or other programs.
+# FilmSearch
+Search the EPG of VDR for films or other programs.
 
-Example usage:
+When could this be useful for you?
+- You are a VDR user.
+- You want to get notifications, when there are specific TV programs.
 
-- write some IMDB-IDs to /tmp/imdb-ids
-- call imdb2fs.lisp
-- add the resulting filmsearch-entries in /tmp/fs-entries to your personal
-  list in /home/user/fs-entries
-- write your configuration to /home/user/.filmsearch
+## Usage
+You need a database with your search entries, for example `~/fs/entries`. The
+default configuration file is `~/.config/filmsearch.conf`. If you use another
+location, you have to run `filmsearch` with the name of that location as first
+argument. It’s useful to run the program from a cronjob: It runs
+automatically and crond sends you the output by email.
+Examples for the configuration file, the database and a crontab file are in
+the `examples` subdirectory. There you’ll find also some other useful stuff.
 
-cronjob (or at every start of vdr): "filmsearch.lisp /home/user/.filmsearch"
+`imdb2fs` is a helper program for creating database entries from IMDB
+identifiers. Its default configuration file is `~/.config/imdb2fs.conf`, but
+as with `filmsearch` you can specify another location as first argument.
 
-For example, I have these lines in my run-vdr-script, just before calling VDR:
+`make-mkv` converts the edited recordings to smaller MKV files, that can be
+distributed (e.g. using MiniDLNA) to Smart-TVs. Its default configuration file
+is `~/.config/make-mkv.conf`, but as with `filmsearch` you can specify
+another location as first argument.
 
-    pidof sbcl >/dev/null || nice sudo -upeter ~peter/filmsearch.lisp \
-          ~peter/fs-config &>>/dev/shm/fs.log &
+## Installation
+Run `make` to create the executables. If something is missing, you should get
+useful error messages.
 
-ToDo:
+## Example workflow
+- A friend recommends a film.
+- Check it on IMDB.
+- Add the ID (e.g. tt12345) to your list (e.g. `~/fs/imdb-ids`).
+- Call imdb2fs after a while.
+- Get email from the FilmSearch cronjob.
+- Add the timers (see also the patch for VDRAdmin).
+- Adjust the search entries (e.g. `~/fs/entries`), especially when there are too
+  many wrong matches.
+- Check and edit the new recordings,  (useful plug-in: MarkAd).
+- Cut.
+- Wait for MKV files becoming available.
 
-- imdb2fs.lisp: add support for TV Series
+LocalWords:  FilmSearch EPG VDR filmsearch cronjob crond crontab imdb2fs
+LocalWords:  MiniDLNA tt12345 VDRAdmin MarkAd
