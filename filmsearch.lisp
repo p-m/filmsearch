@@ -272,6 +272,8 @@ Upper limit is high, because there can be ads."
            (years (cdr (assoc 'years fs)))
            (rating (cadr (assoc 'rating fs)))
            (epg-id (getf epg :id))
+           (duration (getf epg :duration))
+           (runtime (cadr (assoc 'runtime fs)))
            (channel-number (getf epg :channel-number))
            (channel-name (getf epg :channel))
            (date (format nil "~2,'0d-~2,'0d-~4,'0d" d mm y))
@@ -284,8 +286,8 @@ Upper limit is high, because there can be ads."
            (desc (getf epg :description)))
       (format t "~%~@[~%*** ~a ***~%~%~]~@{~#[~;~%~a~%~:;~7a:   ~a~%~]~}~%"
               (cdr (assoc 'comment fs)) "Title" title "Timer" vdradmin
-              "Date" date "Time" time "Channel" channel-name "Rating" rating
-              "IMDB" imdb "Regex" regex
+              "Date" date "Time" time "Channel" channel-name "Duration" duration
+              "Runtime" runtime "Rating" rating "IMDB" imdb "Regex" regex
              (cl-ppcre:regex-replace-all "\\|" desc (string #\Newline))))))
 
 (defun search-films ()
@@ -296,7 +298,7 @@ Upper limit is high, because there can be ads."
         (symbol-macrolet ((mc (cdr (assoc 'match-count fs))))
           (unless mc
             (rplacd (last fs) (copy-alist (list (cons 'match-count 0)))))
-          (when (and (null (cdr (assoc 'sleep fs)))
+          (when (and (null (cadr (assoc 'sleep fs)))
                      (< mc (cv :max-matches))
                      (find-match fs epg))
             (incf mc)

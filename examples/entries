@@ -12,10 +12,15 @@
  (akas (fr "Le cabinet du docteur Caligari")
        (de "Das Kabinett des Doktor Caligari")))
 
-;; Match at least one keyword:
+;; Several checks and at least one keyword in description:
+((titles "Amour") (id "tt1602620") (years 2012) (runtime 127) (rating 7.9)
+ (one-keyword "Haneke" "Trintignant") (akas (fr "Love") (de "Liebe"))
+ (checks year title runtime))
+
+;; Match at least one keyword in title and description:
 (one-keyword "Tiefsee" "Tauchen")
 
-;; Match all keywords:
+;; Match all keywords in title and description:
 (all-keywords "NBA" "Canada")
 
 ;; Use explicit regular expression:
