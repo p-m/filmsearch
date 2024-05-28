@@ -49,7 +49,7 @@
   (setf *title-basics*  (read-gz "basics")
         *title-akas*    (read-gz "akas")
         *title-ratings* (read-gz "ratings"))
-  (with-open-file (in (cv :entries))
+  (with-open-file (in (cv :fs-entries))
     (with-standard-io-syntax
       (setf *fs-entries* (read in)))))
 
