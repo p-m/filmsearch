@@ -1,8 +1,8 @@
 diff --git a/MANUAL b/MANUAL
-index 4c4eb9a2..f6021021 100644
+index 4c4eb9a2..4ea529b5 100644
 --- a/MANUAL
 +++ b/MANUAL
-@@ -1132,6 +1132,10 @@ VDR version 2.6.6 added '/' to this list.
+@@ -1132,6 +1132,16 @@ VDR version 2.6.6 added '/' to this list.
                           2 = yes
                           The default is 0.
  
@@ -10,64 +10,73 @@ index 4c4eb9a2..f6021021 100644
 +                         Controls how much free disk space in MB must be
 +                         preserved in the recording directory.
 +
++  Delete old recordings while cutting = no
++                         Normally VDR does not delete old recordings during
++                         the cutting process when disk space is low.
++                         If you prefer to ensure the minimum free disk space
++                         while cutting, you can set this option to 'yes'.
++
    Replay:
  
    Multi speed mode = no  Defines the function of the "Left" and "Right" keys in
 diff --git a/config.c b/config.c
-index 23d9e1ee..5a517d42 100644
+index 23d9e1ee..497557ea 100644
 --- a/config.c
 +++ b/config.c
-@@ -470,6 +470,7 @@ cSetup::cSetup(void)
+@@ -470,6 +470,8 @@ cSetup::cSetup(void)
    MaxVideoFileSize = MAXVIDEOFILESIZEDEFAULT;
    SplitEditedFiles = 0;
    DelTimeshiftRec = 0;
 +  MinDiskSpace = 1024;
++  AlwaysDeleteOld = 0;
    MinEventTimeout = 30;
    MinUserInactivity = 300;
    NextWakeupTime = 0;
-@@ -700,6 +701,7 @@ bool cSetup::Parse(const char *Name, const char *Value)
+@@ -700,6 +702,8 @@ bool cSetup::Parse(const char *Name, const char *Value)
    else if (!strcasecmp(Name, "MaxVideoFileSize"))    MaxVideoFileSize   = atoi(Value);
    else if (!strcasecmp(Name, "SplitEditedFiles"))    SplitEditedFiles   = atoi(Value);
    else if (!strcasecmp(Name, "DelTimeshiftRec"))     DelTimeshiftRec    = atoi(Value);
 +  else if (!strcasecmp(Name, "MinDiskSpace"))        MinDiskSpace       = atoi(Value);
++  else if (!strcasecmp(Name, "AlwaysDeleteOld"))     AlwaysDeleteOld    = atoi(Value);
    else if (!strcasecmp(Name, "MinEventTimeout"))     MinEventTimeout    = atoi(Value);
    else if (!strcasecmp(Name, "MinUserInactivity"))   MinUserInactivity  = atoi(Value);
    else if (!strcasecmp(Name, "NextWakeupTime"))      NextWakeupTime     = atoi(Value);
-@@ -834,6 +836,7 @@ bool cSetup::Save(void)
+@@ -834,6 +838,8 @@ bool cSetup::Save(void)
    Store("MaxVideoFileSize",   MaxVideoFileSize);
    Store("SplitEditedFiles",   SplitEditedFiles);
    Store("DelTimeshiftRec",    DelTimeshiftRec);
 +  Store("MinDiskSpace",       MinDiskSpace);
++  Store("AlwaysDeleteOld",    AlwaysDeleteOld);
    Store("MinEventTimeout",    MinEventTimeout);
    Store("MinUserInactivity",  MinUserInactivity);
    Store("NextWakeupTime",     NextWakeupTime);
 diff --git a/config.h b/config.h
-index 68fc5a40..755a06ea 100644
+index 68fc5a40..cdb4ad67 100644
 --- a/config.h
 +++ b/config.h
-@@ -342,7 +342,7 @@ public:
-   int MaxVideoFileSize;
+@@ -343,6 +343,7 @@ public:
    int SplitEditedFiles;
    int DelTimeshiftRec;
--  int MinEventTimeout, MinUserInactivity;
-+  int MinDiskSpace, MinEventTimeout, MinUserInactivity;
+   int MinEventTimeout, MinUserInactivity;
++  int MinDiskSpace, AlwaysDeleteOld;
    time_t NextWakeupTime;
    int MultiSpeedMode;
    int ShowReplayMode;
 diff --git a/menu.c b/menu.c
-index be490df5..07ceadd1 100644
+index be490df5..f366e5e4 100644
 --- a/menu.c
 +++ b/menu.c
-@@ -4185,6 +4185,7 @@ cMenuSetupRecord::cMenuSetupRecord(void)
+@@ -4185,6 +4185,8 @@ cMenuSetupRecord::cMenuSetupRecord(void)
    Add(new cMenuEditIntItem( tr("Setup.Recording$Max. video file size (MB)"), &data.MaxVideoFileSize, MINVIDEOFILESIZE, MAXVIDEOFILESIZETS));
    Add(new cMenuEditBoolItem(tr("Setup.Recording$Split edited files"),        &data.SplitEditedFiles));
    Add(new cMenuEditStraItem(tr("Setup.Recording$Delete timeshift recording"),&data.DelTimeshiftRec, 3, delTimeshiftRecTexts));
 +  Add(new cMenuEditIntItem( tr("Setup.Recording$Min. disk space (MB)"),      &data.MinDiskSpace));
++  Add(new cMenuEditBoolItem(tr("Setup.Recording$Delete old rec. while cutting"), &data.AlwaysDeleteOld));
  }
  
  // --- cMenuSetupReplay ------------------------------------------------------
 diff --git a/recording.c b/recording.c
-index 8cdcef8a..b645e187 100644
+index 8cdcef8a..37daf5e0 100644
 --- a/recording.c
 +++ b/recording.c
 @@ -58,8 +58,6 @@
@@ -88,3 +97,12 @@ index 8cdcef8a..b645e187 100644
          // Make sure only one instance of VDR does this:
          cLockFile LockFile(cVideoDirectory::Name());
          if (!LockFile.Lock())
+@@ -197,7 +195,7 @@ void AssertFreeDiskSpace(int Priority, bool Force)
+               return; // the next call will actually remove it
+            }
+         // No "deleted" files to remove, so let's see if we can delete a recording:
+-        if (Priority > 0) {
++        if (Priority > 0 || Setup.AlwaysDeleteOld) {
+            isyslog("...no deleted recording found, trying to delete an old recording...");
+            LOCK_RECORDINGS_WRITE;
+            Recordings->SetExplicitModify();
