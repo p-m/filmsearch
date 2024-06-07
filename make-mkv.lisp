@@ -14,8 +14,7 @@
       :dest-dir    "/opt/video"
       :in-opts     ("-fix_sub_duration" "-txt_page" "subtitle")
       :out-opts    ("-map" "0" "-c:v" "libx264" "-preset" "faster"
-                    "-crf" "20" "-c:a" "copy" "-c:s" "dvdsub" "-palette"
-                    ,(format nil "000000~15@{,~a~:*~}" "ffffff") "-dn")
+                    "-crf" "20" "-c:a" "copy" "-c:s" "dvdsub" "-dn")
       :cmd         "nice"
       :nice-args  ("-n19" "ffmpeg"))))
 
@@ -66,7 +65,7 @@ Side effect: *src-dir* is set."
               *imdb-id* (elt n+i 1)))))
 
 (defun gather-infos ()
-  (with-open-file (in (strmerge *src-dir* "info"))
+  (with-open-file (in (native-pathname (strmerge *src-dir* "info")))
     (let ((first-line (read-line in)))
       (setf *channel* (subseq first-line
                               (1+ (search " " first-line :start2 2))))))
@@ -83,25 +82,27 @@ Side effect: *src-dir* is set."
          (out-file (strmerge prefix ".mkv"))
          (size     (trivial-file-size:file-size-in-octets in-file))
          (free     (diskspace:disk-available-space (cv :dest-dir))))
+    (format t "Trying to create ~a:~%" out-file)
     (if (> size free)
         (my-exit "Very low available space: ~d MiB. Exiting...~%"
                  (round (/ free 1024 1024)) 1))
-    (if (probe-file out-file)
+    (if (probe-file (native-pathname out-file))
         (my-exit "File ~a already exists. Exiting...~%" out-file 1))
-    (let* ((inf-file  (strmerge prefix ".inf"))
-           (log-file  (strmerge prefix ".log"))
+    (let* ((inf       (native-pathname (strmerge prefix ".inf")))
+           (log       (strmerge prefix ".log"))
            (nice-args (cv :nice-args))
            (args      (append nice-args (cv :in-opts) (list "-i" in-file)
                               (cv :out-opts) (list out-file)))
-           (proc      (run-program (cv :cmd) args :output log-file :search t))
+           (proc      (run-program (cv :cmd) args
+                                   :output (native-pathname log) :search t))
            (code      (process-exit-code proc)))
       (when (/= code 0)
-        (my-exit "Error, please see ~a.~%" log-file code))
-      (rename-file (strmerge *src-dir* "info") inf-file)
-      (with-open-file (s inf-file :direction :output :if-exists :append)
+        (my-exit "Error, please see ~a.~%" log code))
+      (rename-file (native-pathname (strmerge *src-dir* "info")) inf)
+      (with-open-file (s inf :direction :output :if-exists :append)
         (format s "I ~a~%" *imdb-id*))
-      (format t "Successfully created ~a~%Arguments were:~%~a~%"
-              out-file (nthcdr (length nice-args) args)))))
+      (format t "Success.~%Arguments were:~%~a~%"
+              (nthcdr (length nice-args) args)))))
 
 (defun main ()
   "Main program."
@@ -111,7 +112,7 @@ Side effect: *src-dir* is set."
   (when (new-ts)
     (gather-infos)
     (convert-to-mkv)
-    (delete-directory *src-dir* :recursive t)))
+    (delete-directory (native-pathname *src-dir*) :recursive t)))
 
 ;; Local Variables:
 ;; pm/slime-auto-load: t
