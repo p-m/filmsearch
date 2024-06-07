@@ -50,7 +50,7 @@
         (ensure-directories-exist elf))))
 
 (defun channels->list ()
-  "Make list of csv data from channels-file."
+  "Make list from csv data from channels-file."
   (with-open-file (in (cv :channels))
     (loop with list and lc = (cv :last-channel)
        for line = (read-line in nil)
@@ -272,7 +272,7 @@ Upper limit is high, because there can be ads."
            (years (cdr (assoc 'years fs)))
            (rating (cadr (assoc 'rating fs)))
            (epg-id (getf epg :id))
-           (duration (getf epg :duration))
+           (duration (round (getf epg :duration) 60))
            (runtime (cadr (assoc 'runtime fs)))
            (channel-number (getf epg :channel-number))
            (channel-name (getf epg :channel))
@@ -284,7 +284,7 @@ Upper limit is high, because there can be ads."
                          o-title years))
            (regex (cdr (assoc (epg-lang epg) (cdr (assoc 'regexs fs)))))
            (desc (getf epg :description)))
-      (format t "~%~@[~%*** ~a ***~%~%~]~@{~#[~;~%~a~%~:;~7a:   ~a~%~]~}~%"
+      (format t "~%~@[~%*** ~a ***~%~%~]~@{~#[~;~%~a~%~:;~8a:   ~a~%~]~}~%"
               (cdr (assoc 'comment fs)) "Title" title "Timer" vdradmin
               "Date" date "Time" time "Channel" channel-name "Duration" duration
               "Runtime" runtime "Rating" rating "IMDB" imdb "Regex" regex
